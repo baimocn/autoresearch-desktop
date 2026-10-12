@@ -1,0 +1,7 @@
+# 桌面视图层：把工作流状态与证据暴露给浏览器面板。
+- insert:
+    - id: autoresearch-ui
+      name: dsh-autoresearch-ui
+      config:
+        taskRoot: '.'
+        maxListEntries: 400

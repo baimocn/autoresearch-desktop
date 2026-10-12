@@ -1,0 +1,31 @@
+{
+  "name": "dsh-autoresearch-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AutoResearch 合规审查与经验理论技能供应：教程 V3 质检技能、上游 8 技能与 SOP 实战经验。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./catalog": "./lib/catalog.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "assets/**",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

@@ -1,0 +1,9 @@
+# 门禁工具层：暴露随包 Python 工具。
+- insert:
+    - id: autoresearch-gates
+      name: dsh-autoresearch-gates
+      config:
+        timeoutMs: 1800000
+        maxOutputChars: 200000
+        allowDockerTools: true
+        allowRootTools: false

@@ -1,0 +1,60 @@
+name: autoresearch-isolated-run
+
+x-agent-common: &agent-common
+  image: ${TASK_IMAGE_DIGEST:?set TASK_IMAGE_DIGEST to an immutable digest}
+  network_mode: none
+  read_only: true
+  tmpfs:
+    - /tmp:size=2g,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+services:
+  lane-a:
+    <<: *agent-common
+    profiles: [lane-a]
+    environment:
+      RUN_ROLE: lane-a
+    volumes:
+      - ${PUBLIC_TASK_DIR:?set PUBLIC_TASK_DIR}:/opt/task:ro
+      - ${LANE_A_WORK_DIR:?set LANE_A_WORK_DIR}:/opt/work:rw
+
+  lane-b:
+    <<: *agent-common
+    profiles: [lane-b]
+    environment:
+      RUN_ROLE: lane-b
+    volumes:
+      - ${PUBLIC_TASK_DIR:?set PUBLIC_TASK_DIR}:/opt/task:ro
+      - ${LANE_B_WORK_DIR:?set LANE_B_WORK_DIR}:/opt/work:rw
+
+  trusted-evaluator:
+    profiles: [evaluate]
+    image: ${EVALUATOR_IMAGE_DIGEST:?set EVALUATOR_IMAGE_DIGEST to an immutable digest}
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ${HIDDEN_EVAL_DIR:?set HIDDEN_EVAL_DIR}:/opt/hidden:ro
+      - ${RESULTS_DIR:?set RESULTS_DIR}:/opt/results:rw
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

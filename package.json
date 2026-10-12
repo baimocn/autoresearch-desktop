@@ -1,0 +1,39 @@
+{
+  "name": "autoresearch-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AutoResearch 智动化桌面版：以 DeepSeek Harness 为基底，把《AutoResearch 专家线下标注教程V3》的四阶段出题流程做成可执行、可审查、可留痕的桌面工作台。",
+  "main": "./src/main/index.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "selftest": "node scripts/selftest.mjs",
+    "verify:integration": "node scripts/verify-integration.mjs",
+    "profile:install": "node scripts/install-profile.mjs",
+    "harness": "node scripts/run-harness.mjs",
+    "syntax:guard": "node scripts/syntax-guard.mjs",
+    "check": "node scripts/syntax-guard.mjs && node scripts/selftest.mjs && node scripts/selftest-remote.mjs && node scripts/selftest-api.mjs && node scripts/ablation-mode.mjs && node scripts/ablation-gates.mjs && node scripts/ablation-upstream.mjs && node scripts/ablation-selfreview.mjs && node scripts/upstream-baseline.mjs && node scripts/verify-integration.mjs",
+    "selftest:remote": "node scripts/selftest-remote.mjs",
+    "selftest:api": "node scripts/selftest-api.mjs",
+    "ablation:mode": "node scripts/ablation-mode.mjs",
+    "ablation:gates": "node scripts/ablation-gates.mjs",
+    "ablation:upstream": "node scripts/ablation-upstream.mjs",
+    "ablation:selfreview": "node scripts/ablation-selfreview.mjs",
+    "upstream:check": "node scripts/upstream-baseline.mjs",
+    "upstream:accept": "node scripts/upstream-baseline.mjs --write",
+    "desktop": "electron .",
+    "sessions:repair": "python scripts/repair-session-ids.py",
+    "workbench": "node scripts/start-workbench.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-base": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-web-app": "0.2.0-rc.2"
+  },
+  "devDependencies": {
+    "electron": "44.7.0"
+  }
+}

@@ -1,0 +1,12 @@
+# 自定义 API 接入层。
+#
+# 声明的路由**合并写入 profile 自己的 cordis.patch.yml**（与内置设置页同一份），
+# 不生成独立的 --patch 文件。原因：补丁的 config 是整体替换，若另写一份指向
+# llm-pi-ai 的 patch，会按叠加顺序把设置页写好的 providers 整个抹掉。
+#
+# 因此本层只挂载插件本身；路由与默认模型由插件运行时写入用户层。
+- insert:
+    - id: autoresearch-api
+      name: dsh-autoresearch-api
+      config:
+        profile: autoresearch

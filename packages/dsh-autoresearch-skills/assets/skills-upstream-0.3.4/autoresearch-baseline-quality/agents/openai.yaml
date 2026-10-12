@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoResearch Baseline 合理性检查"
+  short_description: "识别弱基线、预算不公平和虚假提升风险"
+  default_prompt: "使用 $autoresearch-baseline-quality 检查这个任务的 Baseline 是否合理、公平且可复现。"

@@ -1,0 +1,35 @@
+node_modules/
+.dsh-home/
+dist/
+*.log
+
+# Python 编译缓存。
+#
+# 为什么必须忽略：assets/ 下的上游 Python 脚本会在被导入或执行时生成
+# __pycache__/*.pyc（实测：仅运行 `python <script> --help` 就会生成）。
+# 这些缓存的 magic 与解释器匹配且 PEP 552 头有效，因此**会被优先加载**，
+# 可能让「源码已改、实际运行旧字节码」静默发生。
+#
+# 若某个上游来源确需随包携带字节码，应显式 `!` 反忽略并在
+# docs/upstream-defects.md 说明理由。
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 临时探针产物
+#
+# 这些都是调试期的脚手架，不是产品路径的一部分。整个目录忽略，
+# 而不是逐个文件（`probe-*` 那类命名会不断新增，逐个列必然漏）。
+.tmp-backup/
+.tmp-cdp/
+.tmp-launch.vbs
+.tmp-send.mjs
+_vision_test/
+*.tmp
+
+# 编辑器与系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

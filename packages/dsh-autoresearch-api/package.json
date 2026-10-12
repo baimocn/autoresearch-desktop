@@ -1,0 +1,31 @@
+{
+  "name": "dsh-autoresearch-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "自定义 API 接入：任意兼容端点与任意模型名，密钥只进凭据文档。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/providers.js": "./lib/providers.js",
+    "./lib/profile-patch.js": "./lib/profile-patch.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

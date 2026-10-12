@@ -1,0 +1,31 @@
+{
+  "name": "dsh-autoresearch-remote",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "远端 GPU/Docker 执行与持久化编排：SSH 断开不影响长跑任务，支持机外快照与恢复。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/session.js": "./lib/session.js",
+    "./lib/ledger.js": "./lib/ledger.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

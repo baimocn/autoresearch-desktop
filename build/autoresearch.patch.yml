@@ -1,0 +1,11 @@
+# AutoResearch Desktop 的 profile 补丁层。
+#
+# 桌面壳在启动 harness 时用 --patch 传入本文件（在 profile 自身的 cordis.patch.yml
+# 之后叠加）。这里挂载四个 AutoResearch 插件；它们同时由 profile 的
+# dsh.profile.bundles 声明，所以本文件只做「桌面视角的显式声明与配置」，
+# 便于单文件查看桌面端到底装了哪些行。
+#
+# 注意：如果 profile 已经通过 bundles 挂载同名行，重复 insert 会产生同 id 冲突；
+# 因此本文件默认注释掉，由 profile 的 bundle 层负责挂载。需要覆盖配置时取消注释
+# 并把 config 写全（patch 会整体替换该行的 config，不合并）。
+[]

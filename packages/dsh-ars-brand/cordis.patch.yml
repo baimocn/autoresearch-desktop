@@ -1,0 +1,30 @@
+# dsh-ars-brand 的 profile 层：接管侧边栏品牌位。
+#
+# ── 为什么可以禁用 ui-brand-official ─────────────────────────────────────────
+# 侧边栏品牌不是硬编码在产物里的，而是一个槽位占用：
+#   · `sidebar.brand.mark` 与 `sidebar.brand.name` 由 dsh-client-ui-sidebar
+#     **声明**（契约见 dsh-client-ui-sidebar/lib/types/client/contract/slots.d.ts）；
+#   · `ui-brand-official`（dsh-client-ui-brand-official）只是这两个槽位的
+#     **默认占用者**，由 dsh-web-app 的 bundle patch 声明。
+# 契约原文写明这是留给部署方的口子：
+#   "Brand mark rendered in the expanded brand row and collapsed rail.
+#    Declared by this package's `sidebar` entry; **deployments may replace the
+#    shell's fish fallback without replacing the surrounding controls**."
+# 所以「禁用官方占位行 + 注册自己的占用者」是官方设计意图，不是绕过。
+#
+# ── 为什么本层必须排在 dsh-web-app 之后 ──────────────────────────────────────
+# profile 按 dsh.profile.bundles 的顺序叠加各 bundle 的 patch 层，后者覆盖前者。
+# 本行按 id 命中 ui-brand-official 并置 disabled —— 只有当本 bundle 排在
+# @deepseek-ai/dsh-web-app 之后，这个覆盖才生效。
+# scripts/install-profile.mjs 以「追加到 bundles 末尾」的方式登记本包，
+# 保证了这个顺序。
+#
+# ── 补丁语义 ─────────────────────────────────────────────────────────────────
+# 带 id、不带 insert 的补丁 = 命中既有行；只提供 disabled，未提供 config，
+# 因此该行其余字段（name 等）不受影响。
+- id: ui-brand-official
+  disabled: true
+
+- insert:
+    - id: ars-brand
+      name: dsh-ars-brand

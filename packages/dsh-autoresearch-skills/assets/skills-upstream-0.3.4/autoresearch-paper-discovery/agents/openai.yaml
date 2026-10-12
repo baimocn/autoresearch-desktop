@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoResearch Paper Discovery"
+  short_description: "Find and vet papers for AutoResearch tasks"
+  default_prompt: "Use $autoresearch-paper-discovery to find, deduplicate, and evidence-check papers for a feasible AutoResearch task."

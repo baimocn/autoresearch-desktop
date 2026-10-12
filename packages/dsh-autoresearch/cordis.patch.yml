@@ -1,0 +1,33 @@
+# dsh-autoresearch 的 profile 层：把工作流引擎挂进插件树。
+#
+# `name` 会被桌面壳在启动时改写为绝对 file:// URL（prepareHostPluginSourcesPatch），
+# 因此这里只写包名。
+#
+# restrictWhenActive：模式激活时通过 agent/created 钩子调用 tools.restrict()
+#   屏蔽 restrictedTools 列表里的工具。这让模式从「提醒」变成「约束」——
+#   模型在不该做远端操作时不**能**调 remote_submit，而不是仅仅被文字提醒。
+# restrictedTools：被限制的工具名列表。只列非工作流工具——
+#   工作流动词（init/gate/advance/trajectory）在模式下仍然可用。
+- insert:
+    - id: autoresearch
+      name: dsh-autoresearch
+      config:
+        taskRoot: '.'
+        promptSection: true
+        enableModeCommand: true
+        modeActiveByDefault: false
+        restrictWhenActive: true
+        restrictedTools:
+          - autoresearch_remote_target
+          - autoresearch_remote_probe
+          - autoresearch_remote_submit
+          - autoresearch_remote_probe_job
+          - autoresearch_remote_snapshot
+          - autoresearch_remote_restore
+          - autoresearch_remote_exec
+          - autoresearch_remote_status
+          - autoresearch_api_add
+          - autoresearch_api_dual_lanes
+          - autoresearch_qa_pack
+          - autoresearch_qa_dual
+          - autoresearch_qa_verify

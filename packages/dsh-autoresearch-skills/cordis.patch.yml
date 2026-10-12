@@ -1,0 +1,8 @@
+# 技能供应层：注册 autoresearch 技能来源。
+- insert:
+    - id: autoresearch-skills
+      name: dsh-autoresearch-skills
+      config:
+        rank: 550
+        modelInvocable: true
+        includeSop: true

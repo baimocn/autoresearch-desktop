@@ -1,0 +1,37 @@
+{
+  "name": "dsh-autoresearch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AutoResearch 出题工作流引擎：教程 V3 四阶段状态机与九道可判定门禁。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/phases.js": "./lib/phases.js",
+    "./lib/gates.js": "./lib/gates.js",
+    "./lib/state.js": "./lib/state.js",
+    "./lib/scaffold.js": "./lib/scaffold.js",
+    "./lib/toml.js": "./lib/toml.js",
+    "./lib/workflow.js": "./lib/workflow.js",
+    "./lib/mode.js": "./lib/mode.js",
+    "./lib/session-tasks.js": "./lib/session-tasks.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "dsh-autoresearch-qa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "双路独立质检编排：两个独立会话 + 不同 AI 各出一份报告，自动隔离并 fail-closed 聚合。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/runner.js": "./lib/runner.js",
+    "./lib/lanes.js": "./lib/lanes.js",
+    "./lib/zip.js": "./lib/zip.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "dsh-autoresearch-api": "file:../dsh-autoresearch-api",
+    "dsh-autoresearch-gates": "file:../dsh-autoresearch-gates"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

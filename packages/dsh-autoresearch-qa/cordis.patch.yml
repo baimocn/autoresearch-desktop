@@ -1,0 +1,15 @@
+# 双路质检编排层。
+#
+# 两路配置写在下面 lanes 里：provider / model 必须两两不同（发布门硬要求）。
+# credentialEnv 指定从哪个环境变量读密钥；apiKey 建议不要写进本文件，
+# 而是先 export 对应环境变量，这里只声明变量名。
+- insert:
+    - id: autoresearch-qa
+      name: dsh-autoresearch-qa
+      config:
+        taskRoot: '.'
+        workDir: expert_evidence/dual-qa
+        laneTimeoutMs: 7200000
+        profile: headless
+        skillName: autoresearch-task-qa
+        lanes: []

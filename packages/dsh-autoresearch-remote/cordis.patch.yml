@@ -1,0 +1,18 @@
+# 远端执行与持久化层。
+#
+# 依赖宿主的 ssh 客户端（OpenSSH）。凭据走 SSH 密钥或 ssh-agent；
+# 本插件不接收也不存储任何密钥内容。
+- insert:
+    - id: autoresearch-remote
+      name: dsh-autoresearch-remote
+      config:
+        taskRoot: '.'
+        snapshotDir: expert_evidence/remote-snapshots
+        policy:
+          commandTimeoutMs: 60000
+          submitTimeoutMs: 180000
+          retries: 3
+          retryBackoffMs: 2000
+          serverAliveInterval: 15
+          serverAliveCountMax: 3
+          connectTimeoutSeconds: 20

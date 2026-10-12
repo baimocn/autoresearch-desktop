@@ -1,0 +1,45 @@
+{
+  "name": "dsh-autoresearch-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AutoResearch 桌面视图：四阶段进度、九道门禁结论、交付物缺口、轨迹与证据浏览。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    }
+  },
+  "dependencies": {
+    "dsh-autoresearch": "file:../dsh-autoresearch",
+    "dsh-autoresearch-api": "file:../dsh-autoresearch-api",
+    "dsh-autoresearch-remote": "file:../dsh-autoresearch-remote",
+    "dsh-autoresearch-qa": "file:../dsh-autoresearch-qa"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "dsh-autoresearch": "*",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

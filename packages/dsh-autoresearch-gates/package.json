@@ -1,0 +1,33 @@
+{
+  "name": "dsh-autoresearch-gates",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AutoResearch 门禁工具：把 SOP 工具与教程 V3 质检脚本暴露为模型工具，缺前置如实报不可用。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./tools": "./lib/tools.js",
+    "./lib/tools.js": "./lib/tools.js",
+    "./lib/drift.js": "./lib/drift.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "assets/**",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-12T16:29:19.611Z",
+  "note": "L1 记录层：有意升级上游后应重新生成本基线，使被动漂移可被区分。",
+  "assets": [
+    {
+      "source": "upstream-0.3.4",
+      "logical": "implementation_review.py",
+      "role": "release-evidence",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/qa-0.3.4/implementation_review.py",
+      "bytes": 42925,
+      "sha256": "6ba3517b9de1290f96118a59a51498d5620849026113e694ce2a8f771545dfcf"
+    },
+    {
+      "source": "upstream-0.3.4",
+      "logical": "audit_task.py",
+      "role": "audit",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/qa-0.3.4/audit_task.py",
+      "bytes": 90862,
+      "sha256": "6bfed09c69a0d96edad6c463d333e2002aa47b6d6c8103f9e0c233f1ab7fe8a2"
+    },
+    {
+      "source": "upstream-0.3.4",
+      "logical": "qa_consensus.py",
+      "role": "release-aggregation",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/qa-0.3.4/qa_consensus.py",
+      "bytes": 5361,
+      "sha256": "43c28bd1e293a9cfa4e70f5d54f71f87c23282c15035299d9e1c23e518e55ad5"
+    },
+    {
+      "source": "upstream-0.3.4",
+      "logical": "content_gates.py",
+      "role": "content-gate",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/qa-0.3.4/content_gates.py",
+      "bytes": 20718,
+      "sha256": "9cebf512c5cbff17bab2939bb06e2df677af1e65516113c4883ba8da96185b2d"
+    },
+    {
+      "source": "upstream-0.3.4",
+      "logical": "harbor_review.py",
+      "role": "harbor",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/qa-0.3.4/harbor_review.py",
+      "bytes": 25643,
+      "sha256": "b68672f5a082f06cdf23e150732cf1890dd02bdebb4eec74eec4d21eeafeaf7b"
+    },
+    {
+      "source": "upstream-0.3.4",
+      "logical": "docker_paths.py",
+      "role": "docker-contract",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/qa-0.3.4/docker_paths.py",
+      "bytes": 25945,
+      "sha256": "e738cfa5091a50369a0c83aa672de65896c4fd4e591245da8a390de0b2481a03"
+    },
+    {
+      "source": "tutorial-v3",
+      "logical": "implementation_review.py",
+      "role": "authority",
+      "relativePath": "packages/dsh-autoresearch-skills/assets/skills-0.3.2/autoresearch-task-qa/scripts/implementation_review.py",
+      "bytes": 40831,
+      "sha256": "909f4b439f6273f39798a94985e512f9d563a6c036c8f9f545200ae9dc21eacb"
+    },
+    {
+      "source": "tutorial-v3",
+      "logical": "audit_task.py",
+      "role": "authority",
+      "relativePath": "packages/dsh-autoresearch-skills/assets/skills-0.3.2/autoresearch-task-qa/scripts/audit_task.py",
+      "bytes": 90873,
+      "sha256": "c9f59b4f1f8e13f94c16bc1b2b66e7192805ada89b624186ea71fa24c6f43e91"
+    },
+    {
+      "source": "own-assets",
+      "logical": "sop/tools/feasibility_gate.py",
+      "role": "sop",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/feasibility_gate.py",
+      "bytes": 7216,
+      "sha256": "78fafe632baa671555eddf399a0c31ca096186f8b7516e911c61d0554fd8d1fc"
+    },
+    {
+      "source": "own-assets",
+      "logical": "sop/tools/milestone_gate.py",
+      "role": "sop",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/milestone_gate.py",
+      "bytes": 10687,
+      "sha256": "31135a0228bf93f273934a428c0cd4959ade6f940ba5883002480e50bd16ba70"
+    },
+    {
+      "source": "own-assets",
+      "logical": "sop/tools/paper_screen.py",
+      "role": "sop",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/paper_screen.py",
+      "bytes": 11459,
+      "sha256": "05524f5e56b10324957eb8dec6c5bf95dd5f251b3a91e2c3dff808d3f4a0c3dd"
+    },
+    {
+      "source": "own-assets",
+      "logical": "sop/tools/dockerfile_preflight.py",
+      "role": "sop",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/dockerfile_preflight.py",
+      "bytes": 7536,
+      "sha256": "d2aa7039b13daf42a4194463a39c3b0964dbdb7c6d6417b3d3310abe13d1535b"
+    },
+    {
+      "source": "own-assets",
+      "logical": "sop/tools/harbor_task_contract.py",
+      "role": "sop",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/harbor_task_contract.py",
+      "bytes": 9376,
+      "sha256": "ea46ff1fd111689c46d532832a69e34c0177825acde98cb3bc22dbfa8f5a5025"
+    },
+    {
+      "source": "own-assets",
+      "logical": "sop/tools/nop_preflight.py",
+      "role": "sop",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/nop_preflight.py",
+      "bytes": 14681,
+      "sha256": "93b051b369fa4f41b6029c8bf6767cc222d4b79dade74aeaebda895af23db068"
+    },
+    {
+      "source": "own-assets",
+      "logical": "sop/tools/replay_contract_gate.py",
+      "role": "sop",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/replay_contract_gate.py",
+      "bytes": 10814,
+      "sha256": "8b53dbbe8628cc4a401ec18ba5218c67ab771447ad0628adf190ab838a6956fd"
+    }
+  ],
+  "missing": []
+}
