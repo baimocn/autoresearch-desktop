@@ -199,6 +199,106 @@ export function apply(ctx, rawConfig) {
     presentCall: (args) => ({ card: 'generic', title: `打包提交物：${args.source}`, kind: 'other' }),
   }))
 
+  // ── 工具：决议审议台 ──────────────────────────────────────────────────────
+
+  ctx.tools.register(defineTool({
+    name: 'autoresearch_deliberate',
+    description: '决议审议台：多模型**对抗审议**一个方向，降低单模型偏差带来的决策风险。'
+      + '每路担任固定角色（propose 提案 / counter 反例 / cost 代价），反例方必须给出至少 3 个具体失败模式。'
+      + '产出是「方案 + 已知反驳 + 代价」，不是「一个更对的答案」。'
+      + '**决策辅助，不是门禁**：审议结论不参与 advance，也不替代实测证据。',
+    parameters: {
+      question: { type: 'string', required: true, description: '待审议的方向或决策问题' },
+      context: { type: 'string', description: '背景材料（可选）；角色不会复述它' },
+      lanes: {
+        type: 'array',
+        required: true,
+        description: '审议路配置，2-6 项，每项 { route, model, role, version? }；必须至少含一路 role="counter"',
+      },
+      outDir: { type: 'string', description: '留痕目录；每路独立子目录 + manifest' },
+      timeoutMs: { type: 'number', description: '单路超时（毫秒），默认 30 分钟' },
+      task: { type: 'string', description: '任务根路径；省略时用会话绑定的任务根' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args) {
+      const { validateBoard, independenceLevel, runDeliberation } = await import('./lib/deliberation.js')
+
+      // 与双路质检同一套补全逻辑：把「路由引用」补成可执行事实（api/baseURL/密钥）。
+      const saved = await readLanesFile(dshHome())
+      const providers = await listProviders(profilePatchPath(dshHome(), 'autoresearch')).catch(() => ({}))
+      const refs = await readCredentialRefs(join(dshHome(), '.credentials.yaml')).catch(() => ({}))
+      const resolvedSaved = saved.lanes.length > 0
+        ? resolveSavedLanes({ lanes: saved.lanes, providers, refs })
+        : { lanes: [], issues: [] }
+
+      const lanes = (Array.isArray(args.lanes) ? args.lanes : []).map((lane) => {
+        const match = resolvedSaved.lanes.find((s) => s.route === lane.route && s.model === lane.model)
+        return {
+          ...lane,
+          credentialEnv: lane.credentialEnv ?? match?.credentialEnv ?? null,
+          apiKey: lane.apiKey ?? match?.apiKey ?? null,
+          api: lane.api ?? match?.api ?? null,
+          baseURL: lane.baseURL ?? match?.baseURL ?? null,
+        }
+      })
+
+      const problems = validateBoard(lanes)
+      if (problems.length > 0) {
+        return {
+          ok: false,
+          problems,
+          hint: '审议台至少要 提案 + 反例 两路，反例方是强制项。'
+            + '路由与模型可先在工作台「双路质检」页或 API 配置页配好。',
+        }
+      }
+
+      // 缺凭据的路如实报出，不静默少跑一路。
+      const missingCredential = lanes
+        .filter((l) => l.credentialEnv === null || l.apiKey === null)
+        .map((l) => `${l.role}/${l.route}/${l.model}`)
+
+      const dshEntry = join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+      if (!await exists(dshEntry)) {
+        return { ok: false, problems: [`dsh 入口不存在：${dshEntry}`] }
+      }
+
+      const outRoot = args.outDir !== undefined
+        ? (isAbsolute(args.outDir) ? args.outDir : resolve(process.cwd(), args.outDir))
+        : join(resolveRoot(), 'expert_evidence', 'deliberation',
+          new Date().toISOString().replace(/[:.]/g, '-'))
+
+      const result = await runDeliberation({
+        question: args.question,
+        context: args.context,
+        lanes,
+        outDir: outRoot,
+        dshEntry,
+        timeoutMs: args.timeoutMs,
+        baseEnvironment: process.env,
+      })
+
+      return {
+        ok: result.aggregate.missingRoles.length === 0,
+        outDir: result.outDir,
+        independence: result.independence,
+        missingCredential,
+        missingRoles: result.aggregate.missingRoles,
+        failedLanes: result.aggregate.failed,
+        byRole: Object.fromEntries(Object.entries(result.aggregate.byRole).map(([role, items]) => [
+          role,
+          items.map((x) => ({
+            laneIndex: x.laneIndex, identity: x.identity, ok: x.ok, chars: x.text.length, text: x.text,
+          })),
+        ])),
+        disclaimer: result.aggregate.disclaimer,
+        nextStep: '审议结论是决策材料。要推进仍须用实测证据过门禁（审议不能替代 B/R 实测）。',
+      }
+    },
+  }))
+
   // ── 工具：两路配置 ────────────────────────────────────────────────────────
 
   ctx.tools.register(defineTool({

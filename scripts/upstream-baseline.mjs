@@ -63,6 +63,9 @@ const capabilityMismatches = []
 for (const [sourceId, observed] of Object.entries(caps)) {
   // `__release_evidence__` 是"发布门溯源块产出者"的专项探测，不对应来源声明。
   if (sourceId === '__release_evidence__') continue
+  // 该来源本就不提供发布门复核脚本（如仓库级工具来源）——这是**适用性**事实，
+  // 不是能力退化。混进来会让无关来源长期挂一条假的不符项，淹没真信号。
+  if (observed.notApplicable === true) continue
   if (!observed.resolved) {
     capabilityMismatches.push({ sourceId, key: '(resolve)', declared: true, observed: false, error: observed.error })
     continue

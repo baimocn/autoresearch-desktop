@@ -182,6 +182,38 @@ export const TOOL_REGISTRY = Object.freeze({
     note: '默认 --fail-on never；退出 0 不代表 PASS，必须读报告里的结论字段。' +
       '发布门路径需追加 --release-self-check 与 reviewer/session/clean-context 参数。',
   },
+  // ── 发布前隐私扫描（上游仓库级工具，L3 演练中实测发现真实泄露后采纳） ──────
+  //
+  // 采纳理由（实测，非推测）：把它跑在本仓**已发布的公开内容**上，
+  // 报出 45 项，其中 PRIVATE_COLLAB_URL 与 PRIVATE_IPV4 两类我的人工检查
+  // 完全漏掉 —— 因为泄露的不是密钥，是内网地址，我的清单里没有这一类。
+  // 详见 docs/l3-rehearsal.md §三。
+  'privacy-scan': {
+    id: 'privacy-scan',
+    script: 'privacy_scan.py',
+    resolveFrom: 'upstream-tools-0.3.4',
+    title: '公开前隐私扫描（上游仓库级工具）',
+    description: 'fail-closed 扫描：本机路径、私钥、API token、JWT、bearer、'
+      + '内网协作 URL、邮箱、内网 IPv4、敏感文件名；会深入归档成员与二进制串。'
+      + '命中值会被脱敏后才输出，不打印敏感内容本身。',
+    milestones: ['M5'],
+    requires: ['python3'],
+    exitSemantics: { 0: '未发现隐私问题', 1: '发现隐私问题（fail-closed）', 2: '参数或路径错误' },
+    note: '退出码 1 是**真实发现**，不是工具故障。' +
+      '注意它默认不读 .gitignore，因此在本仓直接跑会扫到 .dsh-home/ 与 node_modules/；' +
+      '要判定「发布内容是否干净」，应对**发布产物或干净 clone** 跑，而不是对工作树跑。',
+  },
+  'verify-skill-archive': {
+    id: 'verify-skill-archive',
+    script: 'verify_skill_archive.py',
+    resolveFrom: 'upstream-tools-0.3.4',
+    title: '可分发 skill ZIP 结构校验（上游仓库级工具）',
+    description: '校验一个可分发 OpenAI skill ZIP 的结构契约（--expected-skill 指定期望技能名）。',
+    milestones: ['M5'],
+    requires: ['python3'],
+    exitSemantics: { 0: '结构契约满足', 1: '结构不符合契约', 2: '参数错误' },
+    note: '只校验结构契约，不校验内容正确性；内容正确性由双路质检负责。',
+  },
 })
 
 /**
@@ -237,6 +269,21 @@ export const UPSTREAM_SOURCES = Object.freeze({
       'fail-on-incomplete': true,
     },
   },
+  'upstream-tools-0.3.4': {
+    id: 'upstream-tools-0.3.4',
+    // 上游**仓库级** scripts/，不属于任何单个技能，因此单独登记一个来源。
+    // 与 upstream-0.3.4 分开的理由：这两份的生命周期不同。技能脚本随技能包
+    // 发布，仓库级工具随仓库发布；上游改其中一个时不该让另一个的来源失效。
+    root: 'assets/upstream-tools-0.3.4',
+    package: 'dsh-autoresearch-gates',
+    label: 'autoresearch-skills 仓库级工具 0.3.4',
+    capabilities: {
+      'release-self-check': false,
+      'reviewer-identity': false,
+      'clean-context': false,
+      'fail-on-incomplete': false,
+    },
+  },
 })
 
 /** 上游资产根目录：本包 assets/ 或指定包。 */
@@ -251,6 +298,12 @@ export const PROJECT_ROOT = join(HERE, '..', '..', '..')
  * @returns 绝对路径；找不到返回 null（调用方如实报不可用，不回落猜测）
  */
 export async function resolveUpstreamAsset(logical, sourceId) {
+  // logical 必须是字符串。调用方常写成 REVIEW_SCRIPT[sourceId] 这种查表形式，
+  // 表里没有该来源时得到 undefined —— 那是「这个来源不提供该脚本」的正常情况，
+  // 应当返回 null（调用方如实报不可用），而不是让 join() 抛 TypeError
+  // 把整条检查链带崩。实测：新增一个来源但没同步补查表时就会触发。
+  if (typeof logical !== 'string' || logical === '') return null
+
   const candidates = []
   if (sourceId === undefined) {
     candidates.push(join(ASSETS_ROOT, logical))
@@ -259,6 +312,7 @@ export async function resolveUpstreamAsset(logical, sourceId) {
     if (source === undefined) return null
     const roots = source.roots ?? [source.root]
     for (const root of roots) {
+      if (typeof root !== 'string') continue
       // 优先在声明包内找，再在其 fallback 包内找。
       for (const pkg of [source.package, source.fallbackPackage]) {
         if (typeof pkg !== 'string') continue

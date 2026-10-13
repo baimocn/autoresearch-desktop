@@ -61,11 +61,31 @@ for (const [id, src] of Object.entries(UPSTREAM_SOURCES)) {
   }
 }
 
-// 关键：每个来源都必须能解析出它声明的脚本，否则等于该来源不可用。
+// 关键：每个**提供发布门复核脚本**的来源都必须能解析出来，否则等于该来源不可用。
+//
+// 但「该来源本就不提供复核脚本」是适用性事实，不是失败 —— 例如仓库级工具来源
+// upstream-tools-0.3.4 只有 privacy_scan.py 这类工具，没有 implementation_review.py。
+// 用 REVIEW_SCRIPT 的语义判定适用性，而不是要求所有来源都有同一个脚本名。
+// 注意：这条豁免必须被别处的真断言补上，否则就成了盲区 —— 见「质疑 8b」。
+const SOURCES_WITH_REVIEW = ['tutorial-v3', 'upstream-0.3.4']
 for (const [id, src] of Object.entries(UPSTREAM_SOURCES)) {
+  if (!SOURCES_WITH_REVIEW.includes(id)) {
+    console.log(`  ${id} 不提供发布门复核脚本（适用性事实，非失败）`)
+    continue
+  }
   const resolved = await resolveUpstreamAsset('implementation_review.py', id)
   record(`来源 ${id} 能解析出 implementation_review.py`, true, resolved !== null,
     resolved ? resolved.split('autoresearch-desktop')[1] : '')
+}
+
+// 质疑 2b：不参与复核脚本的来源，必须有自己的资产可解析 —— 否则「不适用」
+// 就变成了「没验证」。这道断言保证豁免不制造盲区。
+const TOOL_ONLY_SOURCES = { 'upstream-tools-0.3.4': ['privacy_scan.py', 'verify_skill_archive.py'] }
+for (const [id, logics] of Object.entries(TOOL_ONLY_SOURCES)) {
+  for (const logical of logics) {
+    const resolved = await resolveUpstreamAsset(logical, id)
+    record(`${id} 能解析出自己的 ${logical}`, true, resolved !== null)
+  }
 }
 console.log()
 
@@ -124,8 +144,15 @@ console.log()
 console.log('=== 质疑 8：ablation-upstream 会不会自己 fail-open？ ===')
 console.log('   上一轮我发现实验 6 曾「解析不到就跳过」却报 ok。检查它现在是否仍 fail-open。')
 const ablSrc = await readFile(join(ROOT, 'scripts', 'ablation-upstream.mjs'), 'utf8')
-const hasStrictResolve = /record\('所有来源都能解析到（不得静默跳过）'/.test(ablSrc)
+// 断言改名为「适用来源」，因为不提供复核脚本的来源被合理豁免。
+// 但豁免必须配一条真断言，否则就退回 fail-open —— 所以也检查那条补位断言存在。
+const hasStrictResolve = /record\('所有适用来源都能解析到（不得静默跳过）'/.test(ablSrc)
 record('消融实验对「解析不到」断言失败而非跳过', true, hasStrictResolve)
+const hasExemptionCover = /record\('仓库级工具全部可解析'/.test(ablSrc)
+record('消融实验对被豁免的来源补了真断言（不留盲区）', true, hasExemptionCover)
+// 豁免必须是精确的 notApplicable 判定，不能是宽泛的 truthy 跳过。
+const exemptionIsPrecise = /observed\.notApplicable === true/.test(ablSrc)
+record('豁免条件精确（=== true，不是宽泛跳过）', true, exemptionIsPrecise)
 console.log()
 
 const failed = results.filter((r) => !r.pass)

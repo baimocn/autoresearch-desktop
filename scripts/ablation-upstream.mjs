@@ -149,10 +149,17 @@ let unresolvable = 0
 for (const [sourceId, observed] of Object.entries(caps)) {
   // `__release_evidence__` 是发布门溯源块的专项探测，不对应来源声明，单独断言。
   if (sourceId === '__release_evidence__') continue
+  // 「该来源本就不提供发布门复核脚本」是**适用性**事实（如仓库级工具来源），
+  // 与「本该解析到却解析不到」必须分开。后者才是失败。
+  // 混为一谈会让新来源长期挂一条假失败，最终导致这条断言被忽略。
+  if (observed.notApplicable === true) {
+    console.log(`  ${sourceId.padEnd(20)} 不适用：${observed.note}`)
+    continue
+  }
   // 解析不到是**失败**，不是跳过 —— 跳过等于把"没验证"当成"已验证"。
   if (!observed.resolved) {
     unresolvable += 1
-    console.log(`  ${sourceId.padEnd(16)} 解析失败：${observed.error}`)
+    console.log(`  ${sourceId.padEnd(20)} 解析失败：${observed.error}`)
     continue
   }
   const declared = UPSTREAM_SOURCES[sourceId].capabilities
@@ -160,11 +167,33 @@ for (const [sourceId, observed] of Object.entries(caps)) {
     const want = declared[key]
     const same = want === actual
     if (!same) mismatch += 1
-    console.log(`  ${sourceId.padEnd(16)} ${key.padEnd(20)} 声明=${String(want).padEnd(5)} 实测=${String(actual).padEnd(5)} ${same ? '' : '<< 不一致'}`)
+    console.log(`  ${sourceId.padEnd(20)} ${key.padEnd(20)} 声明=${String(want).padEnd(5)} 实测=${String(actual).padEnd(5)} ${same ? '' : '<< 不一致'}`)
   }
 }
-record('所有来源都能解析到（不得静默跳过）', 0, unresolvable)
+record('所有适用来源都能解析到（不得静默跳过）', 0, unresolvable)
 record('所有来源的能力声明与实测一致', 0, mismatch)
+
+// ── 实验 6b：仓库级工具来源的工具必须真的解析到 ────────────────────────────
+//
+// 上面把 upstream-tools-0.3.4 归为"不适用"跳过了能力比对。
+// 但"不参与能力比对"不等于"可以不验证" —— 否则我等于用一条豁免
+// 换来一个无人检查的盲区。所以这里单独断言它的工具可解析。
+console.log()
+console.log('=== 实验 6b：仓库级工具来源（不参与能力比对，但必须可解析）===')
+let toolUnresolved = 0
+for (const toolId of ['privacy-scan', 'verify-skill-archive']) {
+  const resolved = await resolveTool(toolId)
+  const ok = resolved !== undefined && typeof resolved.path === 'string'
+  if (!ok) toolUnresolved += 1
+  console.log(`  ${toolId.padEnd(22)} ${ok ? resolved.path.split(/[\\/]/).slice(-2).join('/') : '解析失败'}`)
+}
+record('仓库级工具全部可解析', 0, toolUnresolved)
+
+// 来源隔离：仓库级工具来源不得抢走发布门工具的解析。
+const qaAudit = await resolveTool('qa-audit')
+record('qa-audit 仍解析到 upstream-0.3.4（未被新来源抢走）', true,
+  typeof qaAudit?.path === 'string' && qaAudit.path.includes('qa-0.3.4'))
+console.log()
 
 // 发布门溯源块：8 项参数缺一即 NOT_READY。
 const releaseEvidence = caps.__release_evidence__

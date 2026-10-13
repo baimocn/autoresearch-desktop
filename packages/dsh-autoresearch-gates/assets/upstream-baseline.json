@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-10-12T16:29:19.611Z",
+  "generatedAt": "2026-10-13T01:08:11.002Z",
   "note": "L1 记录层：有意升级上游后应重新生成本基线，使被动漂移可被区分。",
   "assets": [
     {
@@ -50,6 +50,22 @@
       "relativePath": "packages/dsh-autoresearch-gates/assets/qa-0.3.4/docker_paths.py",
       "bytes": 25945,
       "sha256": "e738cfa5091a50369a0c83aa672de65896c4fd4e591245da8a390de0b2481a03"
+    },
+    {
+      "source": "upstream-tools-0.3.4",
+      "logical": "privacy_scan.py",
+      "role": "privacy-gate",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/upstream-tools-0.3.4/privacy_scan.py",
+      "bytes": 14041,
+      "sha256": "b79caf532a6e1d9ebf2d12aa3e4a9422896cc3e8f7165d40e71628ea245c5b16"
+    },
+    {
+      "source": "upstream-tools-0.3.4",
+      "logical": "verify_skill_archive.py",
+      "role": "archive-contract",
+      "relativePath": "packages/dsh-autoresearch-gates/assets/upstream-tools-0.3.4/verify_skill_archive.py",
+      "bytes": 3363,
+      "sha256": "13745bf52fc4365ffe4a147632806961076da8921a2119bab1cdc41bf0080adc"
     },
     {
       "source": "tutorial-v3",

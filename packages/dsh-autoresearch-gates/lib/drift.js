@@ -60,6 +60,14 @@ export const MONITORED_ASSETS = Object.freeze([
   { source: 'upstream-0.3.4', logical: 'content_gates.py', role: 'content-gate' },
   { source: 'upstream-0.3.4', logical: 'harbor_review.py', role: 'harbor' },
   { source: 'upstream-0.3.4', logical: 'docker_paths.py', role: 'docker-contract' },
+  // ── 上游仓库级工具（upstream-tools-0.3.4）──
+  //
+  // 这两个由 L3 演练采纳（见 docs/l3-rehearsal.md §三）：
+  // privacy_scan.py 在本仓公开内容上实测报出 45 项，其中内网协作 URL
+  // 与内网 IPv4 两类是人工检查漏掉的。既然它已进入检查链，
+  // 就必须纳入漂移监控 —— 否则上游改了它的判据而我们静默沿用旧版。
+  { source: 'upstream-tools-0.3.4', logical: 'privacy_scan.py', role: 'privacy-gate' },
+  { source: 'upstream-tools-0.3.4', logical: 'verify_skill_archive.py', role: 'archive-contract' },
   // ── 权威判据口径（教程 V3 附件 0.3.2）──
   { source: 'tutorial-v3', logical: 'implementation_review.py', role: 'authority' },
   { source: 'tutorial-v3', logical: 'audit_task.py', role: 'authority' },
@@ -279,6 +287,13 @@ export async function probeCapabilities(pythonCommand = 'python') {
   const results = {}
   for (const [sourceId, source] of Object.entries(UPSTREAM_SOURCES)) {
     const logical = REVIEW_SCRIPT[sourceId]
+    // 该来源不提供发布门复核脚本（如仓库级工具来源）——这是**已知的适用性事实**，
+    // 不是「解析失败」。必须与真正的解析失败区分开，否则会给无关来源
+    // 长期挂一条假的 UNKNOWN。用 notApplicable 明确标注。
+    if (logical === undefined) {
+      results[sourceId] = { resolved: false, notApplicable: true, note: `${sourceId} 不提供发布门复核脚本` }
+      continue
+    }
     const path = await resolveUpstreamAsset(logical, sourceId)
     if (path === null) {
       // 解析不到必须是**可判定的事实**，不是静默跳过。
