@@ -34,34 +34,103 @@ window.__ModuleLoader__.load({
   --aw-fs-xs:11px;--aw-fs-sm:12px;--aw-fs-md:13px;--aw-fs-lg:15px;--aw-fs-xl:19px;
   /* 间距系统：4 的倍数，只有这五档 */
   --aw-sp-1:4px;--aw-sp-2:8px;--aw-sp-3:12px;--aw-sp-4:16px;--aw-sp-5:24px;
-  /* 圆角：两级（控件 / 容器） */
-  --aw-r-ctl:7px;--aw-r-box:12px;
-  --aw-accent:#5b8cff;--aw-accent-soft:rgba(91,140,255,.14);--aw-ok:#34d399;--aw-ok-soft:rgba(52,211,153,.14);
-  --aw-warn:#fbbf24;--aw-warn-soft:rgba(251,191,36,.14);--aw-bad:#f87171;--aw-bad-soft:rgba(248,113,113,.14);
-  --aw-idle:#94a3b8;--aw-idle-soft:rgba(148,163,184,.12);
-  --aw-line:var(--dsw-alias-border-secondary,rgba(148,163,184,.18));
-  --aw-bg:var(--dsw-alias-bg-elevated,rgba(148,163,184,.055));
-  --aw-bg-deep:var(--dsw-alias-bg-base,rgba(15,23,42,.35));
-  --aw-ink:var(--dsw-alias-label-primary,#e2e8f0);--aw-ink-2:var(--dsw-alias-label-secondary,#94a3b8);
-  font-family:var(--dsw-font-family-sans,inherit);color:var(--aw-ink);padding:20px 22px 40px;max-width:1240px;margin:0 auto;}
-.aw-panel *{box-sizing:border-box}
-.aw-panel code,.aw-mono{font-family:var(--dsw-font-family-mono,ui-monospace,Consolas,monospace)}
+  /* 状态色：优先取 DSH 语义 token，回退值只作兜底。
+     注意回退值是**浅色主题下也成立**的颜色 —— 早期版本把回退写成深色
+     （如 rgba(15,23,42,.35)），一旦 token 名写错就会静默变成深色块。 */
+  --aw-accent:var(--dsw-alias-brand-primary,#3b6fe0);
+  --aw-accent-soft:color-mix(in srgb,var(--aw-accent) 14%,transparent);
+  --aw-ok:var(--dsw-alias-state-success-primary,#1a7f5a);
+  --aw-ok-soft:color-mix(in srgb,var(--aw-ok) 14%,transparent);
+  --aw-warn:var(--dsw-alias-state-warn-primary,#9a6700);
+  --aw-warn-soft:color-mix(in srgb,var(--aw-warn) 16%,transparent);
+  --aw-bad:var(--dsw-alias-state-error-primary,#c0392b);
+  --aw-bad-soft:color-mix(in srgb,var(--aw-bad) 14%,transparent);
+  --aw-idle:var(--dsw-alias-state-idle-primary,#6b7280);
+  --aw-idle-soft:color-mix(in srgb,var(--aw-idle) 12%,transparent);
 
-.aw-head{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-.aw-head h2{margin:0;font-size:var(--aw-fs-xl);font-weight:650;letter-spacing:.2px}
-.aw-sub{margin:0 0 var(--aw-sp-4);font-size:var(--aw-fs-sm);color:var(--aw-ink-2)}
+  /* 主题适配：token 名必须与 DSH 实际定义一致。
+     实测踩过的坑 —— 这几个名字在 DSH 里**不存在**，写了不会报错，
+     只会静默回退成写死的深色值，表现为浅色主题下出现深色块：
+       --dsw-alias-border-secondary（实际是 border-l1 / border-l2 / l3 / l4）
+       --dsw-alias-bg-elevated    （实际是 bg-layer-1 / bg-layer-2）
+       --dsw-font-family-sans     （实际是 --dsw-font-family）
+       --dsw-font-family-mono     （实际是 --dsw-font-markdown-code-block） */
+  --aw-line:var(--dsw-alias-border-l1,#d8dce3);
+  --aw-line-strong:var(--dsw-alias-border-l2,#c2c8d0);
+  --aw-bg:var(--dsw-alias-bg-layer-1,#f4f5f7);
+  --aw-bg-2:var(--dsw-alias-bg-layer-2,#eceef1);
+  --aw-bg-deep:var(--dsw-alias-bg-base,transparent);
+  --aw-overlay:var(--dsw-alias-bg-overlay,#fff);
+  --aw-ink:var(--dsw-alias-label-primary,#1f2328);
+  --aw-ink-2:var(--dsw-alias-label-secondary,#5c6672);
+  --aw-ink-3:var(--dsw-alias-label-caption,#8a929c);
+  --aw-shadow:0 1px 2px rgba(16,24,40,.06),0 8px 24px -12px rgba(16,24,40,.14);
+  --aw-mono:var(--dsw-font-markdown-code-block,ui-monospace,SFMono-Regular,Consolas,monospace);
+  --aw-r-ctl:var(--dsw-radius-sm,7px);--aw-r-box:var(--dsw-radius-lg,12px);
+  font-family:var(--dsw-font-family,inherit);color:var(--aw-ink);
+  padding:20px 22px 40px;max-width:1240px;margin:0 auto;}
+.aw-panel *{box-sizing:border-box}
+.aw-panel code,.aw-mono{font-family:var(--aw-mono)}
+
+/* 焦点可见性：键盘用户必须能看到焦点在哪。
+   :focus-visible 而不是 :focus —— 鼠标点击不该留焦点环。 */
+.aw-panel :focus-visible{outline:2px solid var(--aw-accent);outline-offset:2px;border-radius:var(--aw-r-ctl)}
+
+/* 尊重系统的减少动效偏好。 */
+@media (prefers-reduced-motion:reduce){
+  .aw-panel *{transition-duration:.01ms !important;animation-duration:.01ms !important}
+}
+
+/* 跳转链接：键盘用户按一次 Tab 就能跳过标签栏直达内容。 */
+.aw-skip{position:absolute;left:-9999px;top:0;z-index:10;background:var(--aw-overlay);
+  border:1px solid var(--aw-accent);border-radius:var(--aw-r-ctl);padding:8px 14px;font-size:var(--aw-fs-sm)}
+.aw-skip:focus{left:22px;top:14px}
+
+/* 页头：标题 + 面包屑。面包屑回答「我在流程的哪一段」，
+   这是原来 9 个平铺标签最缺的信息。 */
+.aw-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:var(--aw-sp-3)}
+.aw-head-main{min-width:0}
+.aw-head h2{margin:0;font-size:var(--aw-fs-xl);font-weight:650;letter-spacing:.2px;line-height:1.25}
+.aw-breadcrumb{margin:2px 0 0;font-size:var(--aw-fs-xs);color:var(--aw-ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.aw-sub{margin:0 0 var(--aw-sp-4);font-size:var(--aw-fs-sm);color:var(--aw-ink-2);line-height:1.6}
 .aw-spacer{flex:1}
 
-.aw-tabs{display:flex;gap:4px;flex-wrap:wrap;margin:2px 0 18px;padding:4px;background:var(--aw-bg);border:1px solid var(--aw-line);border-radius:12px;width:fit-content}
-.aw-tab{border:none;background:transparent;color:var(--aw-ink-2);font:inherit;font-size:var(--aw-fs-md);padding:6px 14px;border-radius:var(--aw-r-ctl);cursor:pointer;transition:background .15s,color .15s}
+/* 查看中的任务条：粘顶，长页面滚动时始终知道自己看的是哪个任务。
+   之前它混在正文里，滚下去就看不见了，容易看错任务。 */
+.aw-taskbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:var(--aw-sp-2);
+  padding:6px var(--aw-sp-3);margin-bottom:var(--aw-sp-3);
+  background:var(--aw-accent-soft);border:1px solid var(--aw-accent);border-radius:var(--aw-r-ctl);
+  backdrop-filter:blur(6px)}
+.aw-taskbar code{flex:1;min-width:0;font-family:var(--aw-mono);font-size:var(--aw-fs-sm);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 标签栏：一级（推进/核查/任务组合）+ 二级（当前分组下的子页）。
+   二级标签只在所属分组被选中时出现，避免 9 个标签平铺。 */
+.aw-tabs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  margin:0 0 var(--aw-sp-4);padding:5px;background:var(--aw-bg);border:1px solid var(--aw-line);
+  border-radius:var(--aw-r-box);position:sticky;top:0;z-index:4}
+.aw-tabset{display:flex;gap:2px;padding:2px;background:var(--aw-bg-2);border-radius:var(--aw-r-ctl)}
+.aw-tab{border:1px solid transparent;background:transparent;color:var(--aw-ink-2);font:inherit;
+  font-size:var(--aw-fs-md);padding:6px 13px;border-radius:var(--aw-r-ctl);cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s;white-space:nowrap}
 .aw-tab:hover{color:var(--aw-ink);background:var(--aw-idle-soft)}
-.aw-tab[data-on="1"]{background:var(--aw-accent);color:#fff;font-weight:550}
+.aw-tab[data-on="1"]{background:var(--aw-accent);color:var(--dsw-alias-brand-text,#fff);font-weight:550;
+  border-color:var(--aw-accent)}
+/* 二级标签用描边而非实心底，与一级入口区分层级。 */
+.aw-tab-sub[data-on="1"]{background:var(--aw-accent-soft);color:var(--aw-accent);
+  border-color:var(--aw-accent);font-weight:550}
+.aw-tabsep{width:1px;align-self:stretch;margin:2px 4px;background:var(--aw-line)}
+
+/* 内容区：接受跳转链接焦点，不显示常驻焦点环（tabIndex=-1 只在被指向时聚焦）。 */
+.aw-content{outline:none}
 
 .aw-btn{border:1px solid var(--aw-line);background:var(--aw-bg);color:var(--aw-ink);font:inherit;font-size:var(--aw-fs-sm);
   min-height:30px;padding:5px 12px;border-radius:var(--aw-r-ctl);cursor:pointer;transition:border-color .15s,background .15s,opacity .15s;display:inline-flex;align-items:center;gap:6px}
+.aw-btn-xs{min-height:24px;padding:2px 9px;font-size:var(--aw-fs-xs)}
 .aw-btn:hover{border-color:var(--aw-accent);background:var(--aw-accent-soft)}
 .aw-btn:disabled{opacity:.45;cursor:default}
-.aw-btn[data-kind="primary"]{background:var(--aw-accent);border-color:var(--aw-accent);color:#fff;font-weight:550}
+.aw-btn[data-kind="primary"]{background:var(--aw-accent);border-color:var(--aw-accent);color:var(--dsw-alias-brand-text,#fff);font-weight:550}
 .aw-btn[data-kind="primary"]:hover{filter:brightness(1.1)}
 .aw-btn[data-kind="danger"]:hover{border-color:var(--aw-bad);color:var(--aw-bad);background:var(--aw-bad-soft)}
 .aw-btn[data-size="sm"]{min-height:26px;padding:3px 9px;font-size:var(--aw-fs-xs)}
@@ -104,7 +173,7 @@ window.__ModuleLoader__.load({
 .aw-step[data-done="1"]::before,.aw-step[data-done="1"]::after{background:var(--aw-accent)}
 .aw-step i{width:18px;height:18px;border-radius:50%;border:2px solid var(--aw-line);background:var(--aw-bg-deep);z-index:1;
   display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--aw-ink-2);font-style:normal}
-.aw-step[data-state="done"] i{background:var(--aw-accent);border-color:var(--aw-accent);color:#fff}
+.aw-step[data-state="done"] i{background:var(--aw-accent);border-color:var(--aw-accent);color:var(--dsw-alias-brand-text,#fff)}
 .aw-step[data-state="current"] i{border-color:var(--aw-accent);color:var(--aw-accent);box-shadow:0 0 0 3px var(--aw-accent-soft)}
 .aw-step span{font-size:var(--aw-fs-xs);color:var(--aw-ink-2);text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .aw-step[data-state="current"] span{color:var(--aw-accent);font-weight:600}
@@ -173,12 +242,15 @@ window.__ModuleLoader__.load({
 .aw-pick code{font-size:var(--aw-fs-xs);color:var(--aw-ink-2);overflow-wrap:anywhere}
 .aw-pick span{font-size:var(--aw-fs-sm);color:var(--aw-ink-2)}
 
-.aw-modal{position:fixed;inset:0;background:rgba(2,6,23,.6);display:flex;align-items:center;justify-content:center;z-index:60;backdrop-filter:blur(2px)}
-.aw-modal>div{background:var(--dsw-alias-bg-base,#0f172a);border:1px solid var(--aw-line);border-radius:16px;padding:20px 22px;
-  max-width:780px;max-height:82vh;overflow:auto;width:92%;box-shadow:0 24px 64px rgba(0,0,0,.4)}
-.aw-modal h3{margin:0;font-size:16px}
-.aw-pre{max-height:300px;overflow:auto;background:var(--aw-bg-deep);border-radius:8px;padding:10px 12px;
-  font-size:11.5px;line-height:1.55;color:var(--aw-ink-2);white-space:pre-wrap;margin:8px 0 0}
+/* 遮罩用中性半透明黑，两种主题下都能压暗底层内容。
+   弹窗面板用 bg-overlay（真正的浮层色）而不是 bg-base ——
+   bg-base 在浅色主题下是页面底色，拿来做弹窗会与背景糊在一起。 */
+.aw-modal{position:fixed;inset:0;background:rgba(9,12,20,.55);display:flex;align-items:center;justify-content:center;z-index:60;backdrop-filter:blur(3px)}
+.aw-modal>div{background:var(--aw-overlay);border:1px solid var(--aw-line-strong);border-radius:var(--aw-r-box);padding:20px 22px;
+  max-width:780px;max-height:82vh;overflow:auto;width:92%;box-shadow:var(--aw-shadow),0 24px 64px rgba(0,0,0,.28)}
+.aw-modal h3{margin:0;font-size:var(--aw-fs-lg)}
+.aw-pre{max-height:300px;overflow:auto;background:var(--aw-bg-2);border:1px solid var(--aw-line);border-radius:var(--aw-r-ctl);padding:10px 12px;
+  font-size:var(--aw-fs-xs);line-height:1.55;color:var(--aw-ink-2);white-space:pre-wrap;margin:8px 0 0;font-family:var(--aw-mono)}
 
 .aw-table{border-collapse:collapse;font-size:12px;width:100%}
 .aw-table th{text-align:left;padding:6px 10px;color:var(--aw-ink-2);font-weight:550;font-size:11px;letter-spacing:.4px;
@@ -1275,21 +1347,62 @@ window.__ModuleLoader__.load({
 
     /* ── 主面板 ──────────────────────────────────────────────────────────── */
 
+    /**
+     * 标签按**用户意图**分两组，而不是平铺 9 个。
+     *
+     * 分组的判据是「现在要做什么」而不是「数据来自哪个模块」：
+     *   · 推进 —— 跟着四阶段走，看当前该做什么（模式 / 四阶段 / 门禁）
+     *   · 核查 —— 跑完之后的取证与复算（轨迹 / 双路质检 / 远端实验 / 证据）
+     * 「任务组合」和「API 配置」是全局设置，不属于任何任务，单独放右侧。
+     *
+     * 顺序沿用工作流顺序，不按重要性排 —— 使用者是按流程走的，不是按热度。
+     * `phase` 字段用于在标签上显示阶段归属，让使用者知道自己在流程哪一段。
+     */
+    const TAB_GROUPS = [
+      {
+        id: 'progress',
+        label: '推进',
+        tabs: [
+          ['mode', '模式'],
+          ['phases', '四阶段'],
+          ['gates', '门禁'],
+        ],
+      },
+      {
+        id: 'verify',
+        label: '核查',
+        tabs: [
+          ['trajectory', '轨迹'],
+          ['dualqa', '双路质检'],
+          ['remote', '远端实验'],
+          ['evidence', '证据浏览'],
+        ],
+      },
+    ]
+
+    /**
+     * 一级入口。`推进` 与 `核查` 各自展开为下面的二级标签，
+     * 点一级入口默认落到该组第一页（按工作流顺序，不按热度）。
+     */
+    const GROUPS = [
+      { id: 'progress', label: '推进', tabs: TAB_GROUPS[0].tabs },
+      { id: 'verify', label: '核查', tabs: TAB_GROUPS[1].tabs },
+    ]
+
+    // 展平后仍是同一份 id → label 映射，供查找标题用。
     const TABS = [
-      ['tasks', '任务'],
-      ['mode', '模式'],
-      ['phases', '四阶段'],
-      ['gates', '门禁'],
-      ['trajectory', '轨迹'],
-      ['dualqa', '双路质检'],
-      ['remote', '远端实验'],
-      ['evidence', '证据浏览'],
+      ['tasks', '任务组合'],
+      ...TAB_GROUPS.flatMap((group) => group.tabs),
       ['api', 'API 配置'],
     ]
 
     // 除「任务组合」和「API 配置」外都是某个任务的视图。未选任务时必须先让用户选，
     // 不能静默回退到进程默认根 —— 那会展示一个与用户无关的目录，看起来像页面坏了。
-    const DETAIL_TABS = new Set(['mode', 'phases', 'gates', 'trajectory', 'dualqa', 'remote', 'evidence'])
+    const DETAIL_TABS = new Set(TAB_GROUPS.flatMap((group) => group.tabs.map(([id]) => id)))
+
+    // 标签 → 所属分组，用于给内容区加一个阶段说明条。
+    const TAB_GROUP_OF = new Map(
+      TAB_GROUPS.flatMap((group) => group.tabs.map(([id]) => [id, group.label])))
 
     function GateCatalogView({ overview, onGate }) {
       if (overview === null) return null
@@ -1305,8 +1418,8 @@ window.__ModuleLoader__.load({
                 h('button', {
                   type: 'button', onClick: () => onGate(entry.gate),
                   style: {
-                    cursor: 'pointer', border: 'none', background: 'transparent', fontFamily: 'var(--dsw-font-family-mono,monospace)',
-                    fontSize: 12.5, color: 'var(--aw-accent)', padding: 0,
+                    cursor: 'pointer', border: 'none', background: 'transparent', fontFamily: 'var(--aw-mono)',
+                    fontSize: 'var(--aw-fs-sm)', color: 'var(--aw-accent)', padding: 0,
                   },
                 }, entry.gate),
                 h('span', { style: { flex: 1 } }, entry.title),
@@ -1332,6 +1445,7 @@ window.__ModuleLoader__.load({
       // 滚动容器在 .autoresearch-panel 承载层上；切页/换任务后回到顶部，
       // 否则新页面从上个页面留下的滚动位置中间开始 —— 对抗审查发现的第三处。
       const scrollRef = React.useRef(null)
+      const contentRef = React.useRef(null)
       React.useEffect(() => {
         scrollRef.current?.scrollTo?.(0, 0)
       }, [tab, task])
@@ -1348,48 +1462,104 @@ window.__ModuleLoader__.load({
         setTab('mode')
       }
 
+      // 当前标签的完整路径，用于浏览器式面包屑。
+      const tabLabel = TABS.find(([id]) => id === tab)?.[1] ?? tab
+      const tabGroupLabel = TAB_GROUP_OF.get(tab) ?? null
+
       return h('div', { className: 'aw-panel', ref: scrollRef },
-        h('div', { className: 'aw-head' },
-          h('h2', null, 'AutoResearch 工作台'),
+        // 键盘用户按一次 Tab 就被问「要不要跳过导航」，不必逐个穿过 9 个标签。
+        h('a', {
+          className: 'aw-skip', href: '#aw-content',
+          onClick: (event) => {
+            event.preventDefault()
+            contentRef.current?.focus?.()
+          },
+        }, '跳到内容'),
+
+        h('header', { className: 'aw-head' },
+          h('div', { className: 'aw-head-main' },
+            h('h2', null, 'AutoResearch 工作台'),
+            h('p', { className: 'aw-breadcrumb' },
+              task === null ? '未选择任务' : tabGroupLabel === null ? tabLabel : `${tabGroupLabel} / ${tabLabel}`)),
           h('div', { className: 'aw-spacer' }),
           task !== null
-            ? h('button', { className: 'aw-btn', onClick: () => { setTask(null); setTab('tasks') } }, '返回任务组合')
+            ? h('button', {
+              type: 'button', className: 'aw-btn',
+              onClick: () => { setTask(null); setTab('tasks') },
+            }, '返回任务组合')
             : null),
 
         task !== null
-          ? h('div', {
-            className: 'aw-box', style: {
-              display: 'flex', alignItems: 'center', gap: 10, padding: '7px 14px',
-              background: 'var(--aw-accent-soft)', borderColor: 'var(--aw-accent)', marginBottom: 10,
-            },
-          },
+          ? h('div', { className: 'aw-taskbar' },
             h(Badge, { tone: 'info' }, '查看中的任务'),
-            h('code', { style: { fontSize: 'var(--aw-fs-sm)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, task),
-            h('span', { style: { fontSize: 'var(--aw-fs-xs)', color: 'var(--aw-ink-2)' } },
-              '对话驱动的任务根以 /autoresearch-task 绑定为准'))
+            h('code', { title: task }, task),
+            h('button', {
+              type: 'button', className: 'aw-btn aw-btn-xs',
+              title: '复制任务根路径',
+              onClick: () => { navigator.clipboard?.writeText?.(task) },
+            }, '复制'))
           : null,
 
-        h('div', { className: 'aw-tabs' },
-          TABS.map(([id, label]) => h('button', {
-            key: id, className: 'aw-tab', 'data-on': tab === id ? '1' : '0', onClick: () => setTab(id),
-          }, label))),
+        h('nav', { className: 'aw-tabs', 'aria-label': '工作台分区' },
+          // 全局入口：不属于任何任务的推进/核查流程。
+          h('div', { className: 'aw-tabset' },
+            GROUPS.map((group) => h('button', {
+              key: group.id,
+              type: 'button',
+              className: 'aw-tab',
+              'data-on': group.tabs.some(([id]) => id === tab) ? '1' : '0',
+              'aria-current': group.tabs.some(([id]) => id === tab) ? 'page' : undefined,
+              onClick: () => setTab(group.tabs[0][0]),
+            }, group.label)),
 
-        tab === 'tasks' ? h(TasksView, { key: `tasks-${refreshKey}`, onOpen: openTask }) : null,
-        tab === 'api' ? h(ApiView, { onChanged: () => setConfigVersion((value) => value + 1) }) : null,
+            h('span', { className: 'aw-tabsep', 'aria-hidden': 'true' }),
 
-        needsTask
-          ? h(TaskPicker, {
-            onPick: openTask,
-            onGotoTasks: () => setTab('tasks'),
-          })
-          : h(React.Fragment, null,
-            tab === 'mode' ? h(ModeView, { key: `mode-${refreshKey}`, task }) : null,
-            tab === 'phases' ? h(PhasesView, { overview: overview.data, onGate: setGate }) : null,
-            tab === 'gates' ? h(GateCatalogView, { overview: overview.data, onGate: setGate }) : null,
-            tab === 'trajectory' ? h(TrajectoryView, { task }) : null,
-            tab === 'dualqa' ? h(DualQaView, { key: configVersion, task, onChanged: () => setConfigVersion((value) => value + 1) }) : null,
-            tab === 'remote' ? h(RemoteView, { task }) : null,
-            tab === 'evidence' ? h(EvidenceView, { task }) : null),
+            h('button', {
+              key: 'tasks', type: 'button', className: 'aw-tab',
+              'data-on': tab === 'tasks' ? '1' : '0',
+              'aria-current': tab === 'tasks' ? 'page' : undefined,
+              onClick: () => setTab('tasks'),
+            }, '任务组合'),
+
+            // 二级标签：只显示当前分组下的子页，避免 9 个标签平铺。
+            TAB_GROUPS.filter((group) => group.tabs.some(([id]) => id === tab))
+              .flatMap((group) => group.tabs)
+              .map(([id, label]) => h('button', {
+                key: id, type: 'button', className: 'aw-tab aw-tab-sub',
+                'data-on': tab === id ? '1' : '0',
+                'aria-current': tab === id ? 'page' : undefined,
+                onClick: () => setTab(id),
+              }, label))),
+
+          h('div', { className: 'aw-spacer' }),
+          h('button', {
+            key: 'api', type: 'button', className: 'aw-tab',
+            'data-on': tab === 'api' ? '1' : '0',
+            'aria-current': tab === 'api' ? 'page' : undefined,
+            onClick: () => setTab('api'),
+          }, 'API 配置')),
+
+        // 内容区包一层：接受跳转链接的焦点，并承载统一的内边距与过渡。
+        h('main', {
+          id: 'aw-content', ref: contentRef, tabIndex: -1,
+          className: 'aw-content', 'aria-live': 'polite',
+        },
+          tab === 'tasks' ? h(TasksView, { key: `tasks-${refreshKey}`, onOpen: openTask }) : null,
+          tab === 'api' ? h(ApiView, { onChanged: () => setConfigVersion((value) => value + 1) }) : null,
+
+          needsTask
+            ? h(TaskPicker, {
+              onPick: openTask,
+              onGotoTasks: () => setTab('tasks'),
+            })
+            : h(React.Fragment, null,
+              tab === 'mode' ? h(ModeView, { key: `mode-${refreshKey}`, task }) : null,
+              tab === 'phases' ? h(PhasesView, { overview: overview.data, onGate: setGate }) : null,
+              tab === 'gates' ? h(GateCatalogView, { overview: overview.data, onGate: setGate }) : null,
+              tab === 'trajectory' ? h(TrajectoryView, { task }) : null,
+              tab === 'dualqa' ? h(DualQaView, { key: configVersion, task, onChanged: () => setConfigVersion((value) => value + 1) }) : null,
+              tab === 'remote' ? h(RemoteView, { task }) : null,
+              tab === 'evidence' ? h(EvidenceView, { task }) : null)),
 
         gate !== null ? h(GateDetail, { gate, task, onClose: () => setGate(null) }) : null)
     }
