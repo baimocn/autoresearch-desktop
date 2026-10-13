@@ -8,6 +8,9 @@
  * @module dsh-autoresearch/gates
  */
 
+// 红线静态扫描（数据泄露、DinD/Compose）拆在独立模块，本文件只做折叠。
+import { scanRedLines } from './redlines.js'
+
 /** 门禁结论三态。 */
 export const VERDICT = Object.freeze({
   RECOMMEND: 'RECOMMEND',
@@ -399,6 +402,105 @@ export function gateTaskContract(toml) {
 }
 
 /**
+ * 提取 Dockerfile 中全部 COPY/ADD 的源路径。
+ *
+ * ## 为什么不能用 `/^\s*COPY\s+(\S+)/gim`
+ *
+ * 上一轮复审实测：那个正则**漏掉 7 种等价写法**，越界 COPY 可以轻松绕过。
+ * 漏掉的形态包括：
+ *   1. 带引号          COPY "../secret" /x
+ *   2. 单引号          COPY '../secret' /x
+ *   3. JSON 数组形式    COPY ["../secret", "/x"]
+ *   4. 大小写混合       copy ../secret /x        （已有 i 标志，这项原本能中）
+ *   5. ADD 指令        ADD ../secret /x         （原本只匹配 COPY）
+ *   6. 带 --from       COPY --from=builder /x /y
+ *   7. 带 --chown 等    COPY --chown=u:g ../s /x
+ *   8. 制表符分隔       COPY\t../secret\t/x
+ *
+ * 所以这里改成：先剥掉指令后的全部 flag，再正确切分引号/JSON 形式，
+ * 并对 COPY 与 ADD 都生效。返回 `{ source, flags }` 便于调用方区分
+ * `--from=` 这种合法的多阶段引用。
+ */
+export function extractCopySources(text) {
+  const results = []
+  if (typeof text !== 'string') return results
+
+  // 逻辑行：处理反斜杠续行，把跨行的 COPY 合成一行再解析。
+  //
+  // 关键细节：续行拼接时**不能插入空格**。Dockerfile 的续行语义是直接拼接，
+  // 插入空格会把 `../sec\` + `ret` 变成 `../sec ret`，路径被切断，
+  // 越界检测随即失效（实测漏报）。因此这里只剥掉反斜杠与行尾空白，
+  // 不加分隔符。
+  const logicalLines = []
+  const rawLines = text.split(/\r?\n/)
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i]
+    while (/\\[ \t]*$/.test(line) && i + 1 < rawLines.length) {
+      line = line.replace(/\\[ \t]*$/, '') + rawLines[++i].replace(/^\s+/, '')
+    }
+    logicalLines.push(line)
+  }
+
+  for (const raw of logicalLines) {
+    const line = raw.trim()
+    if (line === '' || line.startsWith('#')) continue
+    const m = /^(COPY|ADD)\b([\s\S]*)$/i.exec(line)
+    if (m === null) continue
+
+    const directive = m[1].toUpperCase()
+    let rest = m[2].trim()
+    const flags = []
+
+    // 剥掉前导 flag（--from=、--chown=、--chmod= 等），它们不是源路径。
+    // 注意：flag 可能带引号，如 --chown="1000:1000"。
+    for (;;) {
+      const f = /^--([A-Za-z][A-Za-z0-9-]*)(?:=("[^"]*"|'[^']*'|\S+))?\s*/.exec(rest)
+      if (f === null) break
+      flags.push(`--${f[1]}${f[2] !== undefined ? `=${f[2]}` : ''}`)
+      rest = rest.slice(f[0].length)
+    }
+    if (rest === '') continue
+
+    let source = null
+    if (rest.startsWith('[')) {
+      // JSON 形式：COPY ["src", "dst"] —— 取第一个元素。
+      const inner = /^\[([\s\S]*)\]/.exec(rest)
+      if (inner !== null) {
+        const parts = inner[1].split(',').map((p) => p.trim().replace(/^["']|["']$/g, '')).filter((p) => p !== '')
+        if (parts.length > 0) source = parts[0]
+      }
+    } else {
+      // shell 形式：可带引号，可能多个源（最后一个才是目标，但越界判定
+      // 关注任一源，因此这里只取第一个不带引号剥离后的 token）。
+      const tokens = []
+      const tokenRe = /"([^"]*)"|'([^']*)'|(\S+)/g
+      let t
+      while ((t = tokenRe.exec(rest)) !== null) {
+        tokens.push(t[1] ?? t[2] ?? t[3])
+      }
+      // 全部源 = 除最后一个（目标）之外的所有 token；取第一个源。
+      if (tokens.length >= 2) source = tokens[0]
+      else if (tokens.length === 1) source = tokens[0]
+    }
+
+    if (source !== null && source !== '') {
+      results.push({ directive, source, flags, raw: line })
+    }
+  }
+  return results
+}
+
+/** 判定一个 COPY/ADD 源路径是否越界（逃出构建上下文）。 */
+export function isEscapingSource(source) {
+  if (typeof source !== 'string' || source === '') return false
+  const normalized = source.replace(/\\/g, '/')
+  // ../ 开头、绝对路径、或任何路径段里含 .. 都能逃出上下文。
+  if (normalized.startsWith('/')) return true
+  if (normalized.startsWith('../') || normalized === '..') return true
+  return normalized.split('/').includes('..')
+}
+
+/**
  * G-DOCKERFILE：双镜像路径契约静态预检（教程「Docker 路径契约」表）。
  */
 export function gateDockerPathContract(input) {
@@ -408,13 +510,14 @@ export function gateDockerPathContract(input) {
   if (typeof environmentDockerfile !== 'string' || environmentDockerfile === '') {
     checks.push(unknown('G3.1', 'environment/Dockerfile 内容未提供', '读取 environment/Dockerfile 后重跑'))
   } else {
-    const copies = [...environmentDockerfile.matchAll(/^\s*COPY\s+(\S+)/gim)].map((match) => match[1])
-    const escaped = copies.filter((source) => source.startsWith('../') || source.startsWith('/'))
+    const entries = extractCopySources(environmentDockerfile)
+    const copies = entries.map((e) => e.source)
+    const escaped = entries.filter((e) => isEscapingSource(e.source))
     checks.push(
       escaped.length === 0
-        ? ok('G3.1', `environment/Dockerfile 的 COPY 源均为 context 内相对路径（${copies.length} 条）`)
-        : fail('G3.1', `environment/Dockerfile 出现越界 COPY：${escaped.join(', ')}`,
-          'Agent 的源路径必须相对 environment/，禁止 COPY ../'),
+        ? ok('G3.1', `environment/Dockerfile 的 COPY/ADD 源均为 context 内相对路径（${copies.length} 条）`)
+        : fail('G3.1', `environment/Dockerfile 出现越界 COPY/ADD：${escaped.map((e) => `${e.directive} ${e.source}`).join(', ')}`,
+          'Agent 的源路径必须相对 environment/，禁止 COPY ../ 或绝对路径'),
     )
     const leaks = copies.filter((source) => /(^|\/)(tests|hidden_assets|reference)(\/|$)/.test(source))
     checks.push(
@@ -428,12 +531,12 @@ export function gateDockerPathContract(input) {
   if (typeof testsDockerfile !== 'string' || testsDockerfile === '') {
     checks.push(unknown('G3.3', 'tests/Dockerfile 内容未提供', '读取 tests/Dockerfile 后重跑'))
   } else {
-    const copies = [...testsDockerfile.matchAll(/^\s*COPY\s+(\S+)/gim)].map((match) => match[1])
-    const escaped = copies.filter((source) => source.startsWith('../') || source.startsWith('/'))
+    const entries = extractCopySources(testsDockerfile)
+    const escaped = entries.filter((e) => isEscapingSource(e.source))
     checks.push(
       escaped.length === 0
-        ? ok('G3.3', `tests/Dockerfile 的 COPY 源均为 context 内相对路径（${copies.length} 条）`)
-        : fail('G3.3', `tests/Dockerfile 出现越界 COPY：${escaped.join(', ')}`,
+        ? ok('G3.3', `tests/Dockerfile 的 COPY/ADD 源均为 context 内相对路径（${entries.length} 条）`)
+        : fail('G3.3', `tests/Dockerfile 出现越界 COPY/ADD：${escaped.map((e) => `${e.directive} ${e.source}`).join(', ')}`,
           'Verifier 的源路径必须相对 tests/'),
     )
     const twoBackslash = /\r?\n[^\n]*\\\\\r?\n/.test(testsDockerfile)
@@ -470,6 +573,59 @@ export function gateDockerPathContract(input) {
           '题面不得直接暴露论文标题、公开解法仓库或其他答案线索'),
     )
   }
+
+  // ── 红线 1：数据泄露（Reference/Starter 不得读评测集标签进训练） ──────────
+  //
+  // 分档的理由见 redlines.js 顶部：一律命中即拦会因 `val_loader` 这类
+  // 正常写法大量误报，误报多了这条检查会被忽略，真泄露时也不会看。
+  // 因此只有「训练路径上读评测集标签」判 fail，其余降为 unknown 待人工确认。
+  const scanFiles = Array.isArray(input.sourceFiles) ? input.sourceFiles : []
+  if (scanFiles.length === 0) {
+    checks.push(unknown('G3.8', '未提供 reference/ 或 starter/ 源码，红线 1 未扫描',
+      '读入 reference/ 与 starter/ 下的源码文件后重跑'))
+  } else {
+    const red = scanRedLines({ files: scanFiles, scope: input.sourceScope ?? 'reference/starter' })
+    const hard = red.leak.hard
+    const suspect = red.leak.suspect
+    checks.push(
+      hard.length === 0
+        ? ok('G3.8', `红线 1：${red.scannedFiles} 个源文件未见"训练中读取评测集标签"`)
+        : fail('G3.8', `红线 1 触发：训练路径上读取评测集标签 ${hard.length} 处`,
+          hard.slice(0, 3).map((f) => `${f.path}:${f.line} ${f.text}`).join(' | ')),
+    )
+    checks.push(
+      suspect.length === 0
+        ? ok('G3.9', '红线 1：未见训练路径上的评测集数据读取')
+        : unknown('G3.9', `红线 1 待确认：训练路径上出现评测集数据读取 ${suspect.length} 处`,
+          suspect.slice(0, 3).map((f) => `${f.path}:${f.line} ${f.text}`).join(' | ')),
+    )
+    // mention 只记录不判 —— 但必须如实列出，不静默丢弃。
+    if (red.leak.mention.length > 0) {
+      checks.push(ok('G3.10', `红线 1：${red.leak.mention.length} 处评测语境下的评测集引用（正常评测代码，不拦）`))
+    }
+  }
+
+  // ── 红线 6：严禁 DinD，内场不接受 Compose ────────────────────────────────
+  //
+  // 扫描范围**必须包含两个 Dockerfile**，而不只是源码文件。
+  // 理由（实测）：DinD 最典型的出现位置就是 Dockerfile（`RUN apt-get install
+  // docker-ce`、`COPY --from` 挂 socket、`services:` 段），只扫 reference/ 会
+  // 漏掉绝大多数真实案例 —— 第一版就犯了这个错。
+  const archTargets = [...scanFiles]
+  if (typeof environmentDockerfile === 'string' && environmentDockerfile !== '') {
+    archTargets.push({ path: 'environment/Dockerfile', text: environmentDockerfile })
+  }
+  if (typeof testsDockerfile === 'string' && testsDockerfile !== '') {
+    archTargets.push({ path: 'tests/Dockerfile', text: testsDockerfile })
+  }
+  const arch = scanRedLines({ files: archTargets, scope: 'dockerfiles + source' })
+  const archHard = arch.architecture.hard
+  checks.push(
+    archHard.length === 0
+      ? ok('G3.11', `红线 6：${archTargets.length} 个目标未见 DinD 或 Compose 依赖`)
+      : fail('G3.11', `红线 6 触发：检测到 DinD 或 Compose ${archHard.length} 处`,
+        archHard.slice(0, 3).map((f) => `${f.path}:${f.line} [${f.id}] ${f.why}`).join(' | ')),
+  )
 
   return { gate: 'G-DOCKERFILE', milestone: 'M3', verdict: verdictOf(checks), checks }
 }

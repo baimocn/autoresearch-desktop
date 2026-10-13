@@ -14,6 +14,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { readdir } from 'node:fs/promises'
 import {
   INTAKE_CHECKS, PHASES, TASK_MODES, VARIANT_RULES, DEPRECATED_PATHS,
   phaseById, nextPhase,
@@ -41,8 +42,7 @@ export const inject = ['tools', 'systemPrompt', 'sessionProjections', 'agents']
 
 export const name = 'autoresearch'
 
-/** 需要工具、系统提示、会话投影与工作目录服务。 */
-/**
+/** 需要工具、系统提示、会话投影与工作目录服务。 *//**
  * 默认配置。不导出 schemastery Config：该包在本插件目录不可解析，且 cordis
  * 允许无 Config 的插件直接接收 patch 里的原始 config 对象。
  */
@@ -68,6 +68,17 @@ const DEFAULT_CONFIG = Object.freeze({
 })
 
 const TOOL_PREFIX = 'autoresearch'
+
+/**
+ * 红线扫描纳入的源码后缀。
+ *
+ * 不扫全部文件：reference/ 下通常还有数据集、权重、日志，全读进来会
+ * 非常慢且对红线判定毫无帮助。红线只关心会被执行的代码。
+ */
+const SOURCE_EXTENSIONS = Object.freeze([
+  '.py', '.js', '.mjs', '.cjs', '.ts', '.sh', '.bash', '.yaml', '.yml',
+  '.json', '.toml', '.cfg', '.ini', '.ipynb', '.dockerfile', '.txt', '.md',
+])
 
 /** 任务根解析：绝对路径直接采用，相对路径挂到进程工作目录。 */
 function makeRootResolver(config) {
@@ -501,6 +512,34 @@ async function collectFromTask(taskRoot, gate) {
       return undefined
     }
   }
+  /**
+   * 列出目录下的源码文件（递归，限定常见源码后缀）。
+   *
+   * 限定后缀的理由：reference/ 下通常还有数据集、权重、日志，全读进来
+   * 会非常慢且无意义。红线扫描只关心会被执行的代码。
+   * 目录不存在或不可读时返回空数组 —— 调用方据此报"未扫描"，不伪造。
+   */
+  const listSourceFiles = async (relativeDir, depth = 0) => {
+    if (depth > 6) return []
+    const absolute = resolveTaskPath(taskRoot, relativeDir)
+    let entries
+    try {
+      entries = await readdir(absolute, { withFileTypes: true })
+    } catch {
+      return []
+    }
+    const out = []
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '__pycache__') continue
+      const rel = `${relativeDir}/${entry.name}`
+      if (entry.isDirectory()) {
+        out.push(...await listSourceFiles(rel, depth + 1))
+      } else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
+        out.push(rel)
+      }
+    }
+    return out
+  }
   const readJsonIfPresent = async (relativePath) => {
     const text = await readIfPresent(relativePath)
     if (text === undefined) return undefined
@@ -516,12 +555,25 @@ async function collectFromTask(taskRoot, gate) {
       const tomlText = await readIfPresent('workspace/harbor_task/task.toml')
       return tomlText === undefined ? {} : { ...parseTomlSubset(tomlText) }
     }
-    case 'G-DOCKERFILE':
+    case 'G-DOCKERFILE': {
+      // 红线 1 需要 reference/ 与 starter/ 的源码文本，红线 6 需要两个 Dockerfile。
+      // 若不在这里读入源码，红线在真实流程里永远不会跑（只会报"未扫描"），
+      // 那等于红线只存在于消融实验里 —— 这是必须避免的"纸面门禁"。
+      const sourceFiles = []
+      for (const dir of ['workspace/reference', 'workspace/starter', 'workspace/harbor_task/reference']) {
+        for (const rel of await listSourceFiles(dir)) {
+          const text = await readIfPresent(rel)
+          if (typeof text === 'string') sourceFiles.push({ path: rel, text })
+        }
+      }
       return {
         environmentDockerfile: await readIfPresent('workspace/harbor_task/environment/Dockerfile'),
         testsDockerfile: await readIfPresent('workspace/harbor_task/tests/Dockerfile'),
         instructionMd: await readIfPresent('workspace/harbor_task/instruction.md'),
+        sourceFiles,
+        sourceScope: 'workspace/reference + workspace/starter',
       }
+    }
     case 'G-TRAJECTORY':
       return {
         codexTrajectory: await readJsonIfPresent('expert_evidence/trajectory_codex.json'),
