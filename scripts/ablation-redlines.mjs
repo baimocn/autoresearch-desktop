@@ -14,7 +14,8 @@
  * 用法：node scripts/ablation-redlines.mjs
  */
 
-import { scanDataLeakage, scanArchitecture, scanRedLines } from '../packages/dsh-autoresearch/lib/redlines.js'
+import { scanDataLeakage, scanArchitecture, scanRedLines, extractEvalDatasetNames }
+  from '../packages/dsh-autoresearch/lib/redlines.js'
 import { extractCopySources, isEscapingSource, gateDockerPathContract }
   from '../packages/dsh-autoresearch/lib/gates.js'
 
@@ -308,6 +309,50 @@ record('对照：评测标签集合喂进 loss → ≥1 个 leak', true,
     .some((f) => f.level === 'leak'))
 console.log()
 
+console.log('=== 实验 15：红线 1 —— 跨文件「按名取评测集注册」（补绕过形态）===')
+console.log('   名字声明在配置里、引用在代码里，所以这条必须跨文件判：')
+console.log('   `MetadataCatalog.get("nwpu_val_instance")` 把评测集的注册与标注')
+console.log('   路径钉进了训练环境。旧实现只认 DATASETS.TEST 属性形态，硬编码')
+console.log('   数据集名可绕过。')
+const declConfig = {
+  path: 'configs/score.yaml',
+  text: 'DATASETS:\n  TRAIN: ("isaid_train",)\n  TEST: ("nwpu_val_instance",)\n',
+}
+const byNameScan = (files) => scanRedLines({ files, scope: 'reference/starter' })
+const byNameLeaks = (files) => byNameScan(files).leak.hard.filter((f) => f.code === 'EVAL_SET_BY_NAME')
+
+record('训练路径按名取评测集注册 → ≥1 个 leak', true,
+  byNameLeaks([declConfig, {
+    path: 'score/score.py',
+    text: 'def build_model(cfg):\n    return MetadataCatalog.get("nwpu_val_instance")\n',
+  }]).length > 0)
+record('按名取但工程里未声明该名 → 0 个 leak（不把任意字符串当评测集）', 0,
+  byNameLeaks([{ path: 'configs/score.yaml', text: 'DATASETS:\n  TRAIN: ("isaid_train",)\n' }, {
+    path: 'score/score.py',
+    text: 'def build_model(cfg):\n    return MetadataCatalog.get("nwpu_val_instance")\n',
+  }]).length)
+record('评测语境里按名取（no_grad + accuracy）→ 0 个 leak', 0,
+  byNameLeaks([declConfig, {
+    path: 'tools/eval.py',
+    text: 'with torch.no_grad():\n    ds = DatasetCatalog.get("nwpu_val_instance")\n    print("accuracy", compute_accuracy(model, ds))\n',
+  }]).length)
+// 反向对照：同一形态换成训练集，不得被按名规则误报 ——
+// 这条钉住一个实测过的缺陷：正则备选未分组，导致任何 MetadataCatalog.get(...) 都命中。
+record('反向：MetadataCatalog.get(cfg.DATASETS.TRAIN[0]) → 0 个按名 leak', 0,
+  byNameLeaks([declConfig, {
+    path: 'score/score.py',
+    text: 'def build_model(cfg):\n    return MetadataCatalog.get(cfg.DATASETS.TRAIN[0])\n',
+  }]).length)
+record('声明提取：yaml TEST: 与 python DATASETS.TEST 两种形态', true,
+  (() => {
+    const names = extractEvalDatasetNames([
+      declConfig,
+      { path: 'a.py', text: 'cfg.DATASETS.TEST = ("val_holdout",)\n' },
+    ])
+    return names.includes('nwpu_val_instance') && names.includes('val_holdout')
+  })())
+console.log()
+
 const failed = results.filter((r) => !r.pass)
 console.log('='.repeat(62))
 console.log(`红线消融：${results.length - failed.length} 通过，${failed.length} 失败，共 ${results.length} 项`)
@@ -320,6 +365,7 @@ console.log('已知局限（如实声明）：')
 console.log('  · 「是否在训练路径上」是启发式判定，可能漏报精心构造的写法')
 console.log('  · 因此 mention 档全部如实列出，供人工复核，不静默丢弃')
 console.log('  · 评测集数据读取（非标签）只到 suspect，不虚报成 leak')
+console.log('  · 按名取注册只在「注册/构造调用」的参数位置判，名字拼装或经变量传入仍会漏')
 console.log('  · 变量名以 eval_ 开头的写法会命中评测语境豁免（既有行为，未在本次改动）')
 console.log('  · 红线 6 只做静态扫描，不构建镜像验证；真机结论以构建日志为准')
 process.exit(failed.length === 0 ? 0 : 1)

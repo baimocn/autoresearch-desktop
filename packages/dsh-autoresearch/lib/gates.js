@@ -590,7 +590,7 @@ export function gateDockerPathContract(input) {
     checks.push(
       hard.length === 0
         ? ok('G3.8', `红线 1：${red.scannedFiles} 个源文件未见"训练中读取评测集标签"`)
-        : fail('G3.8', `红线 1 触发：训练路径上读取评测集标签 ${hard.length} 处`,
+        : fail('G3.8', `红线 1 触发：训练路径上读取评测集标签/注册 ${hard.length} 处`,
           hard.slice(0, 3).map((f) => `${f.path}:${f.line} ${f.text}`).join(' | ')),
     )
     checks.push(

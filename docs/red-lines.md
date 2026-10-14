@@ -131,11 +131,20 @@ for x, y in val_loader:        # ← 这里才把 y 绑到评测集
 | 形态 | 判据 | 档 |
 |---|---|---|
 | 求值评测集注册 | `cfg.DATASETS.TEST` / `cfg["DATASETS"]["TEST"]` / `getattr(..., "TEST")` 出现在训练路径（窗口内有 `DATASETS.TRAIN`、训练语境，或所在函数是 `build_model`/`train*` 之类） | `leak`；证据不足时 `suspect` |
+| 按名取评测集注册 | 工程配置里声明过的评测集名被硬编码进注册/构造调用（`MetadataCatalog.get("nwpu_val_instance")`）且在训练路径 | `leak`；证据不足时 `suspect` |
 | 训练期在评测集上评估 | 训练命令/配置里评测间隔非零（`EVAL_PERIOD`、`val_check_interval`、`eval_interval` …） | `suspect` |
 | 训练入口构造评测集 | 训练脚本里**调用**（不是定义）`build_eval_loaders()` / `get_eval_dataset()` 之类 | `suspect` |
 
+「按名取评测集注册」是**跨文件**判定：名字声明在配置里（`TEST: ("nwpu_val_instance",)`、
+`DATASETS.TEST = (...)`、`--test-dataset name`），引用在代码里。只有工程内**声明过的**
+名字才算证据 —— 否则会把任意字符串当评测集。这条补的是硬编码数据集名绕过
+`DATASETS.TEST` 属性形态的口子。
+
 「评测间隔非零」只落 `suspect`：静态文本无法证明「训练命令是否覆盖了
 `DATASETS.TEST`」，证据不足以定 `leak`，如实留在待确认档，不虚报。
+
+每条 finding 带 `why` 字段（与红线 6 一致），说明「为什么怀疑这里」，便于人工复核
+追溯判据，而不是只给一个行号和代码片段。
 
 ### 已知局限
 
@@ -153,11 +162,12 @@ for x, y in val_loader:        # ← 这里才把 y 绑到评测集
   大于收益。稳妥的修法是按「是否真在算指标」判语境，不是继续加词。
 - **「读取评测集数据并送进 loss」若变量名不带标签证据**（如 `ann = json.load(...)`）
   只到 `suspect` 而非 `leak`：静态扫描无法证明读到的就是标注，如实分档。
-- **按名取注册**（`MetadataCatalog.get("nwpu_val_instance")`，不写 `DATASETS.TEST`）
-  不检出：需要把配置里的评测集名与代码关联，属跨文件分析，当前未做。
+- **按名取注册**已补（跨文件关联配置里声明的评测集名）。但仍有余量：只在
+  **注册/构造调用**（`MetadataCatalog.get` / `get_dataset` 之类）的参数位置判定；
+  名字被拼装（`f"nwpu_{split}"`）或经变量间接传入时仍会漏。
 - **「训练命令是否覆盖了测试集」无法静态验证**，所以评测间隔非零只落 `suspect`。
-  同理，纯 yaml 里写 `DATASETS: TEST:`（没有对应的 `.py` 读取、也没有非零评测间隔）
-  不检出。
+  纯 yaml 里写 `DATASETS: TEST:`（没有被任何代码按名引用、也没有非零评测间隔）
+  同样不检出。
 - **「定义」与「使用」的界限**：训练脚本里定义一个评测集加载器构造函数
   （`def get_val_loader`）不再被判 `EVAL_LOADER_CALL`；但若同窗口还有评测集
   数据读取，仍会落 `suspect` 待人工确认 —— 是否真在训练里用，静态看不出来。
@@ -210,7 +220,7 @@ DinD 最典型的出现位置恰恰是 **Dockerfile**（`RUN apt-get install doc
 
 | 脚本 | 项数 | 验的是什么 |
 |---|---|---|
-| `scripts/ablation-redlines.mjs` | 79 | 检测能力、等价写法、误报控制、门禁折叠、标识符分量误报回归语料、正向规则 |
+| `scripts/ablation-redlines.mjs` | 84 | 检测能力、等价写法、误报控制、门禁折叠、标识符分量误报回归语料、正向规则、跨文件按名取注册 |
 | `scripts/check-gate-wiring.mjs` | 11 | 真实任务树下自填 payload 是否真的读了源码 |
 
 `check-gate-wiring.mjs` 存在的理由：红线逻辑再对，如果 `autoresearch_gate`

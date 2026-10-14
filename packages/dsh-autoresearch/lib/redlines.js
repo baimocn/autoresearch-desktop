@@ -294,6 +294,109 @@ const EVAL_LOADER_CALL = String.raw`(?<![A-Za-z0-9_])(?:(?:get|build|make|create
 /** 构建训练模型/训练配置的函数定义名（用于判断「训练路径上」）。 */
 const TRAIN_FN = String.raw`\bdef\s+\w*(?:train|build_model|build_train|train_model|setup_train|configure|build_config|make_model)\w*\s*\(`
 
+/** 数据集注册/构造调用（参数是数据集名）。 */
+const DATASET_NAME_CALL = String.raw`(?:(?:MetadataCatalog|DatasetCatalog)\s*\.\s*get|(?:\w*(?:get|build|load|register|make|create)_\w*dataset\w*))\s*\(`
+
+/** 评测集数据名：`TEST: ("nwpu_val_instance",)` / `--test-dataset name`。 */
+const EVAL_DATASET_DECL = [
+  String.raw`^[ \t]*(?:TEST|TEST_DATASET|EVAL_DATASET|VAL_DATASET)[ \t]*:[ \t]*[^\n]*`,
+  String.raw`(?:cfg\s*\.\s*)?DATASETS\s*\.\s*TEST\s*[:=]\s*[^\n]*`,
+  String.raw`--(?:test|eval|val)[-_]dataset[=\s]+[A-Za-z_][\w.-]*`,
+].join('|')
+
+// ── 预编译判定正则（模块级：逐文件的 scanDataLeakage 与工程级的
+//    scanEvalSetByName 共用，避免两处各写一份而漂移）───────────────────────
+
+/** 训练语境：反传、优化器、训练步。 */
+const trainCtxRe = new RegExp(TRAIN_CONTEXT, 'i')
+const trainFnRe = new RegExp(TRAIN_FN, 'i')
+const evalRegRe = new RegExp(EVAL_REGISTRATION, 'i')
+const evalPeriodRe = new RegExp(EVAL_PERIOD, 'i')
+const evalLoaderCallRe = new RegExp(EVAL_LOADER_CALL, 'i')
+const evalDatasetDeclRe = new RegExp(EVAL_DATASET_DECL, 'gim')
+
+/**
+ * 评估语境：指标、日志、断言 —— 这些位置读标签是正常的。
+ *
+ * `no_grad` / `inference_mode` / `.eval()` 必须在内：`with torch.no_grad():`
+ * 之后遍历 test_loader 是**教科书式的评测代码**，不是泄露。早期漏了它们，
+ * 于是 AutoRe0566 的 workspace/reference 被判 6 处「训练路径读评测标签」——
+ * 实际那 6 处是 `test_l2 = 0` 这样的指标累加器初始化，真正触发的是窗口里
+ * 那句 `for x, y in test_loader:`。结果是合法的参考实现被 G-DOCKERFILE 硬拒。
+ */
+const evalCtxRe = /(?:accuracy|precision|recall|f1|metric|evaluate|eval_|report|print|log|assert|score|auc|mAP|iou|confusion|no_grad|inference_mode|\.eval\(\))/i
+
+/** 每条 finding 的「为什么怀疑这里」，供门禁报告与人工复核追溯判据。 */
+const WHY = {
+  EVAL_LABEL_READ: '训练路径上读评测集标签：会直接用评测真值优化模型',
+  EVAL_DATA_READ: '训练路径上读评测集数据：需确认是否把评测集送进了训练',
+  EVAL_REG_READ: '训练路径上求值评测集注册：评测集的注册与标注路径会进入 Agent 可见镜像',
+  EVAL_PERIOD: '训练期在评测集上评估：评测指标被训练过程看见',
+  EVAL_LOADER_CALL: '训练入口构造评测集加载器：需确认训练里是否用了评测集',
+  EVAL_SET_BY_NAME: '按名取评测集：评测集的注册与标注路径会进入训练环境',
+}
+
+/**
+ * 工程级：提取「已声明的评测集数据集名」。
+ *
+ * 硬编码按名取注册（`MetadataCatalog.get("nwpu_val_instance")`）是隔离破坏 ——
+ * 名字进了训练代码，评测集的注册与标注路径就必须在 Agent 可见环境里。但只有
+ * **工程里声明过的**评测集名才算证据，避免把任意字符串当评测集。
+ */
+export function extractEvalDatasetNames(files) {
+  const names = new Set()
+  const collectQuoted = (s) => {
+    for (const m of String(s).matchAll(/["']([A-Za-z_][\w.-]*)["']/g)) names.add(m[1])
+  }
+  for (const file of Array.isArray(files) ? files : []) {
+    if (typeof file?.text !== 'string') continue
+    for (const m of file.text.matchAll(evalDatasetDeclRe)) collectQuoted(m[0])
+  }
+  return [...names]
+}
+
+/**
+ * 工程级：训练路径上按名取评测集注册。
+ *
+ * 判定「训练路径」与 `DATASETS.TEST` 那条同源：窗口内有训练语境、有
+ * `DATASETS.TRAIN`、或所在函数是 `build_model`/`train*` 之类。证据不足落
+ * `suspect`；只有明显在评测语境里读才降 `mention`。
+ */
+export function scanEvalSetByName(text, filename, evalNames) {
+  const names = Array.isArray(evalNames) ? evalNames : []
+  if (names.length === 0) return []
+  const lines = blankDocstrings(text.split(/\r?\n/))
+  const findings = []
+  const refRes = names.map((name) => ({
+    name,
+    re: new RegExp(`${DATASET_NAME_CALL}\\s*["']${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'i'),
+  }))
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('#')) continue
+    if (!refRes.some((r) => r.re.test(line))) continue
+
+    const win = lines.slice(Math.max(0, i - 4), Math.min(lines.length, i + 5))
+    const window = win.join('\n')
+    const above = lines.slice(Math.max(0, i - 12), i + 1).join('\n')
+    const inEval = evalCtxRe.test(line) || evalCtxRe.test(window)
+    const trainPath = trainCtxRe.test(window)
+      || win.some(forOverTrainContainer)
+      || /(?<![A-Za-z0-9_])DATASETS\s*\.\s*TRAIN(?![A-Za-z0-9_])/i.test(window)
+      || trainFnRe.test(above)
+    findings.push({
+      level: (trainPath || !inEval) ? (trainPath ? 'leak' : 'suspect') : 'mention',
+      line: i + 1,
+      code: 'EVAL_SET_BY_NAME',
+      text: trimmed.slice(0, 160),
+      why: WHY.EVAL_SET_BY_NAME,
+    })
+  }
+  return findings
+}
+
 /**
  * 扫描一个源文件是否为"在训练中读取评测集标签"。
  *
@@ -323,21 +426,6 @@ export function scanDataLeakage(text, filename = '') {
   const lines = blankDocstrings(text.split(/\r?\n/))
   const WINDOW = 4
 
-  const trainCtxRe = new RegExp(TRAIN_CONTEXT, 'i')
-  // 评估语境：指标、日志、断言 —— 这些位置读标签是正常的。
-  //
-  // `no_grad` / `inference_mode` / `.eval()` 必须在内：`with torch.no_grad():`
-  // 之后遍历 test_loader 是**教科书式的评测代码**，不是泄露。早期漏了它们，
-  // 于是 AutoRe0566 的 workspace/reference 被判 6 处「训练路径读评测标签」——
-  // 实际那 6 处是 `test_l2 = 0` 这样的指标累加器初始化，真正触发的是窗口里
-  // 那句 `for x, y in test_loader:`。结果是合法的参考实现被 G-DOCKERFILE 硬拒。
-  const evalCtxRe = /(?:accuracy|precision|recall|f1|metric|evaluate|eval_|report|print|log|assert|score|auc|mAP|iou|confusion|no_grad|inference_mode|\.eval\(\))/i
-
-  // 红线 1 的正向规则（补漏报）。
-  const evalRegRe = new RegExp(EVAL_REGISTRATION, 'i')
-  const evalPeriodRe = new RegExp(EVAL_PERIOD, 'i')
-  const evalLoaderCallRe = new RegExp(EVAL_LOADER_CALL, 'i')
-  const trainFnRe = new RegExp(TRAIN_FN, 'i')
   // 整个文件是否是训练脚本（供评测集加载器调用判定用）。
   const fileHasTrainCtx = trainCtxRe.test(text)
 
@@ -371,6 +459,7 @@ export function scanDataLeakage(text, filename = '') {
         line: i + 1,
         code: 'EVAL_REG_READ',
         text: trimmed.slice(0, 160),
+        why: WHY.EVAL_REG_READ,
       })
       continue
     }
@@ -383,7 +472,7 @@ export function scanDataLeakage(text, filename = '') {
     if (periodMatch) {
       const period = Number(periodMatch[1] ?? periodMatch[2] ?? 0)
       if (period > 0) {
-        findings.push({ level: 'suspect', line: i + 1, code: 'EVAL_PERIOD', text: trimmed.slice(0, 160) })
+        findings.push({ level: 'suspect', line: i + 1, code: 'EVAL_PERIOD', text: trimmed.slice(0, 160), why: WHY.EVAL_PERIOD })
       }
       continue
     }
@@ -392,7 +481,7 @@ export function scanDataLeakage(text, filename = '') {
     // 只认**调用**，不认定义 —— 否则训练脚本里定义一个 `def get_val_loader()`
     // 就会被判待确认（实测误报）。
     if (evalLoaderCallRe.test(line) && !/^\s*(?:async\s+)?def\s/.test(line) && fileHasTrainCtx) {
-      findings.push({ level: 'suspect', line: i + 1, code: 'EVAL_LOADER_CALL', text: trimmed.slice(0, 160) })
+      findings.push({ level: 'suspect', line: i + 1, code: 'EVAL_LOADER_CALL', text: trimmed.slice(0, 160), why: WHY.EVAL_LOADER_CALL })
       continue
     }
 
@@ -438,7 +527,7 @@ export function scanDataLeakage(text, filename = '') {
     else if (lineHasEval || lineHasLabel) { level = 'mention'; code = 'EVAL_LABEL_READ' }
     if (level === null) continue
 
-    findings.push({ level, line: i + 1, code, text: trimmed.slice(0, 160) })
+    findings.push({ level, line: i + 1, code, text: trimmed.slice(0, 160), why: WHY[code] ?? '' })
   }
 
   // 同一处泄露会在窗口内被多行重复命中，按 (level, code) 归并到首个行号，
@@ -562,10 +651,16 @@ export function scanRedLines(input) {
   const files = Array.isArray(input?.files) ? input.files : []
   const leakFindings = []
   const archFindings = []
+  // 工程级：先收集「声明过的评测集名」，再判「训练路径按名取评测集注册」。
+  // 这条必须跨文件 —— 名字声明在配置里，引用在代码里。
+  const evalNames = extractEvalDatasetNames(files)
 
   for (const file of files) {
     if (typeof file?.text !== 'string') continue
     for (const f of scanDataLeakage(file.text, file.path)) {
+      leakFindings.push({ ...f, path: file.path })
+    }
+    for (const f of scanEvalSetByName(file.text, file.path, evalNames)) {
       leakFindings.push({ ...f, path: file.path })
     }
     for (const f of scanArchitecture(file.text, file.path)) {
