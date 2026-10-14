@@ -181,6 +181,133 @@ const allLeak = agg.leak.hard.length + agg.leak.suspect.length + agg.leak.mentio
 record('三档之和 = 明细总数（无丢弃）', true, allLeak > 0)
 console.log()
 
+console.log('=== 实验 12：红线 1 —— 标识符子串不得判 leak（实测误报回归）===')
+console.log('   输入取自真实任务 AutoRe1852 的 score/score.py：把类名做归一化，')
+console.log('   再求评测类别与训练类别词表是否有词面交集。没有标注读取、没有反传。')
+// 旧实现因 `split_labels` → `labels`、`test_class_names` → `test`、
+// `for label in train_class_names` → 训练语境，把 7 行全判 leak、门禁硬拒。
+const classnameWindow = [
+  '            class_names = split_labels(metadata.thing_classes)',
+  '            train_class_names = split_labels(train_metadata.thing_classes)',
+  '        train_class_names = {l for label in train_class_names for l in label}',
+  '        category_overlapping_list = []',
+  '        for test_class_names in class_names:',
+  '            is_overlapping = not set(train_class_names).isdisjoint(set(test_class_names))',
+  '            category_overlapping_list.append(is_overlapping)',
+].join('\n')
+const windowFindings = scanDataLeakage(classnameWindow, 'score.py')
+record('7 行词表运算 → 0 个 leak', 0, windowFindings.filter((f) => f.level === 'leak').length)
+record('7 行词表运算 → 0 个 suspect', 0, windowFindings.filter((f) => f.level === 'suspect').length)
+
+// 反向对照：同一段代码里加上真正的评测标签读取并送进 loss，
+// 必须重新判 leak —— 证明修复不是把整段代码变成盲区。
+const windowWithLabelRead = classnameWindow + '\n' + [
+  '        val_labels = json.load(open("val_labels.json"))',
+  '        loss = criterion(model(x), val_labels)',
+  '        loss.backward()',
+].join('\n')
+record('同段代码 + 真读评测标签并送 loss → ≥1 个 leak', true,
+  scanDataLeakage(windowWithLabelRead, 'score.py').some((f) => f.level === 'leak'))
+
+// 分档如实：`ann = json.load(open(eval_json))` 这类只有「评测集数据读取」、
+// 没有标签证据的写法落 suspect（待人工确认），不虚报成 leak、也不静默丢弃。
+const windowWithDataRead = classnameWindow + '\n' + [
+  '        ann = json.load(open(eval_json))',
+  '        loss = criterion(model(x), ann)',
+  '        loss.backward()',
+].join('\n')
+record('同段代码 + 评测集数据读取（无标签证据）→ ≥1 个 suspect', true,
+  scanDataLeakage(windowWithDataRead, 'score.py').some((f) => f.level === 'suspect'))
+console.log()
+
+console.log('=== 实验 13：红线 1 —— 训练路径读评测集注册 / 训练期评测（补漏报）===')
+console.log('   输入取自真实任务 AutoRe1852 的真违规：build_model() 里求值')
+console.log('   cfg.DATASETS.TEST，且训练配置的 EVAL_PERIOD 非零。旧实现只判 mention。')
+const registrationRead = [
+  'def build_model(cfg):',
+  '    return dict(',
+  '        "train_metadata": MetadataCatalog.get(cfg.DATASETS.TRAIN[0]),',
+  '        "test_metadata":  MetadataCatalog.get(cfg.DATASETS.TEST[0]),',
+  '    )',
+].join('\n')
+const regFindings = scanDataLeakage(registrationRead, 'score.py')
+record('build_model 里求值 DATASETS.TEST → ≥1 个 leak', true,
+  regFindings.some((f) => f.level === 'leak'))
+// 反向对照：同一行换成 DATASETS.TRAIN，不得误报。
+record('反向：DATASETS.TRAIN → 0 个 leak', 0,
+  scanDataLeakage('def build_model(cfg):\n    return MetadataCatalog.get(cfg.DATASETS.TRAIN[0])\n', 'score.py')
+    .filter((f) => f.level === 'leak').length)
+
+// 训练配置里 EVAL_PERIOD 非零：训练期会在评测集上评估。
+// 静态文本无法证明「测试集是否被覆盖」，因此落 suspect 而非 leak（如实分档）。
+const evalPeriodCfg = [
+  'DATASETS:',
+  '  TEST: ("nwpu_val_instance",)',
+  'TEST:',
+  '  EVAL_PERIOD: 50000',
+].join('\n')
+record('训练配置 EVAL_PERIOD: 50000 → ≥1 个 suspect', true,
+  scanDataLeakage(evalPeriodCfg, 'score.yaml').some((f) => f.level === 'suspect'))
+record('EVAL_PERIOD: 0 → 0 个 suspect', 0,
+  scanDataLeakage('TEST:\n  EVAL_PERIOD: 0\n', 'score.yaml').filter((f) => f.level === 'suspect').length)
+
+// 训练入口调用评测集加载器构造。
+const trainCallsEvalLoader = [
+  'def train(cfg):',
+  '    for x, y in train_loader:',
+  '        loss = criterion(model(x), y)',
+  '        loss.backward()',
+  '        optimizer.step()',
+  '    eval_loaders = build_eval_loaders(cfg)',
+].join('\n')
+record('训练脚本调用 build_eval_loaders → ≥1 个 suspect', true,
+  scanDataLeakage(trainCallsEvalLoader, 'train.py').some((f) => f.level === 'suspect'))
+console.log()
+
+console.log('=== 实验 14：红线 1 —— 对抗性反例语料（误报回归闸）===')
+console.log('   下面每条都是「名字里含评测/标签词、但语义无害」的写法。')
+console.log('   它们曾全部或部分被判 leak —— 标识符子串匹配的必然结果。')
+console.log('   把它们钉在这里，是因为误报只被测一次就会复发。')
+const FALSE_POSITIVE_CASES = [
+  ['标识符前缀：test_labels_format（尾分量不是标签词）',
+    'for x, y in train_loader:\n    test_labels_format = "%d"\n    loss = criterion(model(x), y)\n    loss.backward()'],
+  ['标识符前缀：val_labels_count',
+    'for x, y in train_loader:\n    val_labels_count = 0\n    loss = criterion(model(x), y)\n    loss.backward()'],
+  ['函数名：def val_labels_helper',
+    'def val_labels_helper(x):\n    return x.strip()\n\ndef train():\n    for x, y in train_loader:\n        loss = criterion(model(x), y)\n        loss.backward()'],
+  ['遍历评测命名词表：for i, name in enumerate(val_class_names)',
+    'for i, name in enumerate(val_class_names):\n    pass\nloss = criterion(model(x), y)\nloss.backward()'],
+  ['遍历评测命名配置：for k, v in test_config.items()',
+    'for k, v in test_config.items():\n    pass\nloss = criterion(model(x), y)\nloss.backward()'],
+  ['局部变量名 label 在训练循环里',
+    'for batch in train_loader:\n    label = mapping[cls]\n    loss = criterion(model(x), y)\n    loss.backward()'],
+]
+for (const [label, text] of FALSE_POSITIVE_CASES) {
+  const hits = scanDataLeakage(text, 'train.py')
+  record(`不判 leak：${label}`, 0, hits.filter((f) => f.level === 'leak').length)
+}
+// docstring 里劝阻违规的说明文字不是代码。
+record('不判 leak：docstring 里提到 cfg.DATASETS.TEST',
+  0, scanDataLeakage('def build_model(cfg):\n    """注意：不要用 cfg.DATASETS.TEST 做训练。"""\n    return build(cfg)', 'score.py')
+    .filter((f) => f.level === 'leak').length)
+// 只「定义」评测集加载器不算调用。
+record('不判 suspect（EVAL_LOADER_CALL）：def get_val_loader 定义',
+  false, scanDataLeakage('def get_val_loader(cfg):\n    pass\n\ndef train():\n    for x, y in train_loader:\n        loss.backward()', 'train.py')
+    .some((f) => f.code === 'EVAL_LOADER_CALL'))
+
+// 同一批反例的「对照组」：把无害写法换成真泄露，必须仍然判 leak ——
+// 证明收紧判定没有把整类写法变成盲区。
+record('对照：单变量训练循环里读真值 → ≥1 个 leak', true,
+  scanDataLeakage('for batch in train_loader:\n    gt = load_ground_truth()\n    step(model, gt)', 'train.py')
+    .some((f) => f.level === 'leak'))
+record('对照：自定义 loss 名喂评测标签 → ≥1 个 leak', true,
+  scanDataLeakage('for x, y in train_loader:\n    loss = focal_loss(model(x), val_targets)\n    loss.backward()', 'train.py')
+    .some((f) => f.level === 'leak'))
+record('对照：评测标签集合喂进 loss → ≥1 个 leak', true,
+  scanDataLeakage('y = np.array(val_labels_list)\nloss = criterion(model(x), y)\nloss.backward()', 'train.py')
+    .some((f) => f.level === 'leak'))
+console.log()
+
 const failed = results.filter((r) => !r.pass)
 console.log('='.repeat(62))
 console.log(`红线消融：${results.length - failed.length} 通过，${failed.length} 失败，共 ${results.length} 项`)
@@ -192,5 +319,7 @@ console.log()
 console.log('已知局限（如实声明）：')
 console.log('  · 「是否在训练路径上」是启发式判定，可能漏报精心构造的写法')
 console.log('  · 因此 mention 档全部如实列出，供人工复核，不静默丢弃')
+console.log('  · 评测集数据读取（非标签）只到 suspect，不虚报成 leak')
+console.log('  · 变量名以 eval_ 开头的写法会命中评测语境豁免（既有行为，未在本次改动）')
 console.log('  · 红线 6 只做静态扫描，不构建镜像验证；真机结论以构建日志为准')
 process.exit(failed.length === 0 ? 0 : 1)

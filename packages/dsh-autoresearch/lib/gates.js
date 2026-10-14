@@ -601,7 +601,7 @@ export function gateDockerPathContract(input) {
     )
     // mention 只记录不判 —— 但必须如实列出，不静默丢弃。
     if (red.leak.mention.length > 0) {
-      checks.push(ok('G3.10', `红线 1：${red.leak.mention.length} 处评测语境下的评测集引用（正常评测代码，不拦）`))
+      checks.push(ok('G3.10', `红线 1：${red.leak.mention.length} 处非训练语境的评测集引用（正常评测代码或证据不足，不拦）`))
     }
   }
 
