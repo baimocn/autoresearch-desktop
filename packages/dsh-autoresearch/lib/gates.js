@@ -829,7 +829,32 @@ export function gateReplayContract(input) {
 
 /**
  * G-SINGLE-SOURCE：同一事实单一真源（SOP 规则 19）。
- * 传入全包扫描到的同名量声明集合。
+ *
+ * ## 判据是「值冲突」，不是「出现次数」
+ *
+ * 规则 19 原话：「锚点/口径/基线在全包只能有**一套生效声明**；不同口径须明确
+ * 标注为对照」，要防的是**同一事实存在互相矛盾的两份声明**（例如改了 B 锚点
+ * 却没改另一处，留下自相矛盾的旧值）。
+ *
+ * 早期实现只数声明**个数**（`length > 1` 即 FAIL），于是**任何同时遵守教程
+ * 两处要求的题包都必然被拒**：教程自身的 schema 里有
+ * `expert_annotation.score_contract.metric`，又要求口径写进
+ * `optimization_evidence/comparison_summary.json`。两处值**完全相同**也判 REJECT
+ * （实测 AutoRe 题包：comparison_summary.metric=balanced_accuracy 与
+ * expert_annotation.metric=balanced_accuracy 并存 → REJECT）。
+ *
+ * 后果是作者为过检查只能删掉教程要求的字段，而两处都有真实消费者
+ * （`gates/lib/tools.js` 的方向三级回退、UI 的 score_contract 读取）——
+ * 门禁反而在逼题包降低信息完整性。摘要与明细并存本身是正常文档结构，
+ * 摘要复述真值不是「第二套声明」。
+ *
+ * 因此改为：**同一个键出现不同值才 FAIL**；出现多个不同键（或键不同、值也
+ * 不同）时无法判定是否同一事实，降为 UNKNOWN 待人工确认，不误报成冲突。
+ *
+ * @param {{anchorDeclarations?: (string|{key: string, value: unknown, source?: string})[],
+ *          staleDeclarations?: string[]}} input
+ *   `anchorDeclarations` 每项形如 `'文件.字段=值'`（采集侧现状）或结构化
+ *   `{key, value, source}`。两种都认 —— 采集侧尚未改造时不至于失能。
  */
 export function gateSingleSource(input) {
   const checks = []
@@ -837,11 +862,72 @@ export function gateSingleSource(input) {
 
   if (anchorDeclarations.length === 0) {
     checks.push(unknown('G19.1', '未发现锚点/口径声明', '确认题包已声明 B/R/U 与协议'))
-  } else if (anchorDeclarations.length > 1) {
-    checks.push(fail('G19.1', `锚点/口径存在 ${anchorDeclarations.length} 套并存声明：${anchorDeclarations.join('；')}`,
-      '全包只能一套生效声明；不同口径须明确标注为对照'))
   } else {
-    checks.push(ok('G19.1', '锚点/口径为单一生效声明'))
+    // 结构化为 {key, value, source}。字符串形态按第一个 '=' 切分：
+    // 键取「最后一个点之后」的字段名（`comparison_summary.metric` → `metric`），
+    // 这样两个文件里的同名字段会归到同一个键下比较。
+    const parsed = anchorDeclarations.map((entry) => {
+      if (entry !== null && typeof entry === 'object') {
+        return {
+          key: String(entry.key ?? '').trim(),
+          value: entry.value,
+          source: String(entry.source ?? entry.key ?? '(未命名来源)'),
+        }
+      }
+      const text = String(entry)
+      const eq = text.indexOf('=')
+      if (eq < 0) return { key: '', value: text, source: text }
+      const lhs = text.slice(0, eq).trim()
+      return {
+        key: lhs.split('.').pop() ?? lhs,
+        value: text.slice(eq + 1).trim(),
+        source: lhs,
+      }
+    })
+
+    // 无键声明（不含 '=' 的旧形态）无法判断是否同一事实，只能退回数个数。
+    const unkeyed = parsed.filter((d) => d.key === '')
+    const byKey = new Map()
+    for (const d of parsed) {
+      if (d.key === '') continue
+      if (!byKey.has(d.key)) byKey.set(d.key, [])
+      byKey.get(d.key).push(d)
+    }
+
+    /** 值的比较口径：字面量直接比，其余用 JSON 归一化再比。 */
+    const norm = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
+    const conflicts = []
+    for (const [key, items] of byKey) {
+      const values = new Set(items.map((i) => norm(i.value)))
+      if (values.size > 1) {
+        conflicts.push(`${key}: ${items.map((i) => `${i.source}=${norm(i.value)}`).join(' vs ')}`)
+      }
+    }
+
+    const describeAll = () => parsed.map((d) => `${d.source}=${norm(d.value)}`).join('；')
+    /** 多声明同值时的说明 —— 值一致是「重复/摘要式声明」，不是第二套生效声明。 */
+    const agreed = () => (parsed.length > 1 ? `（${parsed.length} 处声明值一致）` : '')
+
+    if (conflicts.length > 0) {
+      checks.push(fail('G19.1', `同一事实存在互相矛盾的声明：${conflicts.join('；')}`,
+        '同一个键只能有一个值；保留生效值，更正或删除其余声明'))
+    } else if (unkeyed.length === 0) {
+      // 每个键都只有一个值 —— 无论有几个键（metric 与 direction 本就是两个
+      // 不同事实）都不构成冲突。重复复述同一值也不是「第二套生效声明」。
+      checks.push(ok('G19.1', `锚点/口径为单一生效声明${agreed()}`))
+    } else if (byKey.size === 0) {
+      // 全部无法归键：保留旧语义（多于一条即视为多套声明）。
+      checks.push(unkeyed.length > 1
+        ? fail('G19.1', `锚点/口径存在 ${unkeyed.length} 套并存声明：`
+          + `${unkeyed.map((d) => norm(d.value)).join('；')}`,
+          '全包只能一套生效声明；不同口径须明确标注为对照')
+        : ok('G19.1', '锚点/口径为单一生效声明'))
+    } else {
+      // 有键与无键混杂：无键声明无法判断归属哪个事实，如实降为待确认。
+      checks.push(unknown('G19.1',
+        `锚点/口径存在 ${byKey.size + unkeyed.length} 处无法归并为同一事实的声明：${describeAll()}`,
+        '确认这些声明描述的是同一事实；若是，收敛为同一个值；若否，明确标注为对照'))
+    }
   }
 
   checks.push(

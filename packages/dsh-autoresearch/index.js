@@ -581,11 +581,33 @@ async function collectFromTask(taskRoot, gate) {
         runSummary: await readJsonIfPresent('expert_evidence/run_summary.json'),
       }
     case 'G-SINGLE-SOURCE': {
+      // 采集**结构化**声明（键 / 值 / 来源），而不是拼好的字符串。
+      //
+      // 判定侧要比的是「同一个键有没有不同值」——只传字符串时它只能按
+      // 个数判，于是「摘要在两处复述同一口径」会被当成两套并存声明（实测
+      // AutoRe 题包：comparison_summary 与 expert_annotation 都写了
+      // metric=balanced_accuracy，值完全相同，仍判 REJECT）。
+      //
+      // 键取**字段名**而非全路径：`comparison_summary.metric` 与
+      // `expert_annotation.metric` 归到同一个 `metric` 键下，值不一致才算冲突。
       const comparison = await readJsonIfPresent('optimization_evidence/comparison_summary.json')
       const annotation = await readJsonIfPresent('expert_evidence/expert_annotation.json')
       const declarations = []
-      if (comparison?.metric?.name) declarations.push(`comparison_summary.metric=${comparison.metric.name}`)
-      if (annotation?.score_contract?.metric) declarations.push(`expert_annotation.metric=${annotation.score_contract.metric}`)
+      const push = (key, value, source) => {
+        if (value === undefined || value === null || value === '') return
+        declarations.push({ key, value, source })
+      }
+      push('metric', comparison?.metric?.name, 'comparison_summary.metric.name')
+      push('direction', comparison?.metric?.direction, 'comparison_summary.metric.direction')
+      push('metric', annotation?.score_contract?.metric, 'expert_annotation.score_contract.metric')
+      push('direction', annotation?.score_contract?.direction, 'expert_annotation.score_contract.direction')
+      // direction 可能写成带解释的长串（"minimize（原始指标）；…"），
+      // 取开头的第一个字面量再比 —— 与 gates/lib/tools.js 的读取口径一致。
+      for (const d of declarations) {
+        if (d.key !== 'direction' || typeof d.value !== 'string') continue
+        const leading = /^\s*(minimize|maximize)/.exec(d.value)
+        if (leading !== null) d.value = leading[1]
+      }
       return { anchorDeclarations: declarations, staleDeclarations: [] }
     }
     default:

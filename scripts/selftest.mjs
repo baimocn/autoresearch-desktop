@@ -405,6 +405,55 @@ test('G-SINGLE-SOURCE：单一真源通过', () => {
   assert.equal(result.verdict, 'RECOMMEND')
 })
 
+test('G-SINGLE-SOURCE：同一事实重复声明且值一致 → 不判冲突', () => {
+  // 教程的 schema 里 expert_annotation.score_contract.metric 与
+  // optimization_evidence/comparison_summary.json 都写口径 —— 两处值相同。
+  // 早期实现只数声明个数，于是**任何同时遵守教程两处要求的题包都必然 REJECT**
+  // （实测 AutoRe 题包 balanced_accuracy 两处一致仍被拒），逼作者删教程要求的
+  // 字段。规则 19 要防的是「互相矛盾的声明」，不是「同一事实被提及两次」。
+  const sameValue = gates.gateSingleSource({
+    anchorDeclarations: ['comparison_summary.metric=balanced_accuracy',
+      'expert_annotation.metric=balanced_accuracy'],
+    staleDeclarations: [],
+  })
+  assert.equal(sameValue.verdict, 'RECOMMEND', '值一致的重复声明不得判 REJECT')
+
+  // 只有值真的不同（同一事实两份矛盾声明）才 FAIL。
+  const conflict = gates.gateSingleSource({
+    anchorDeclarations: ['comparison_summary.metric=balanced_accuracy',
+      'expert_annotation.metric=accuracy'],
+    staleDeclarations: [],
+  })
+  assert.equal(conflict.verdict, 'REJECT', '值矛盾必须判 REJECT')
+})
+
+test('G-SINGLE-SOURCE：结构化声明按「键→值」判冲突', () => {
+  const d = (key, value, source) => ({ key, value, source })
+  // metric 与 direction 是两个不同事实，各自值一致 → 通过。
+  assert.equal(gates.gateSingleSource({
+    anchorDeclarations: [
+      d('metric', 'balanced_accuracy', 'comparison_summary.metric.name'),
+      d('direction', 'maximize', 'comparison_summary.metric.direction'),
+      d('metric', 'balanced_accuracy', 'expert_annotation.score_contract.metric'),
+      d('direction', 'maximize', 'expert_annotation.score_contract.direction'),
+    ],
+    staleDeclarations: [],
+  }).verdict, 'RECOMMEND', '多键各自值一致不得判冲突')
+  // direction 被改了一处（改了 B 锚点却没改另一处）→ 必须拦。
+  assert.equal(gates.gateSingleSource({
+    anchorDeclarations: [d('direction', 'maximize', 'a'), d('direction', 'minimize', 'b')],
+    staleDeclarations: [],
+  }).verdict, 'REJECT', '同一键不同值必须拦')
+})
+
+test('G-SINGLE-SOURCE：证据不足时不得当通过', () => {
+  // 无键声明（旧格式）无法归并到同一事实：如实降为待确认，不当 PASS。
+  const mixed = gates.gateSingleSource({ anchorDeclarations: ['a.metric=x', 'bogus'], staleDeclarations: [] })
+  assert.equal(mixed.verdict, 'NEEDS_EVIDENCE')
+  assert.equal(gates.gateSingleSource({ anchorDeclarations: [], staleDeclarations: [] }).verdict,
+    'NEEDS_EVIDENCE')
+})
+
 test('G-PACK-VERIFY：哈希不一致判 FAIL', () => {
   const result = gates.gatePackVerify({
     sourceHashes: { 'a.py': 'x', 'b.py': 'y' },
