@@ -64,7 +64,20 @@ const EXPECTED_DIVERGENCES = [
   {
     gate: 'G-CONTRACT',
     reason: 'JS 侧做四项必查的静态预判；Python 用目标 Harbor 版本的 TaskConfig 真加载。' +
-      '「能解析 ≠ 原生接受」，因此正式结论以真加载为准。',
+      '「能解析 ≠ 原生接受」，因此正式结论以真加载为准。' +
+      '【覆盖范围差异】JS 还额外判 QA15 资源上限（教程 v0.3.8 L266：单轮 ≤7200s、' +
+      '≤8 张 H20/L20、≤64 核、CPU 题不得声明 gpu_types）—— Python 权威只管' +
+      '「会不会阻断原生加载」的四类契约问题，不查平台容量。' +
+      '因此同一份 task.toml 上 JS 可能比 Python 多给 NEEDS_EVIDENCE，' +
+      '而 advanceState 消费的是 JS 结论，这是有意的：资源超限是真实的提交门槛。' +
+      '【同口径下的实质分歧】`[task].name` 的**格式**：JS 要求恰好两段 `org/name`' +
+      '（依据 harbor 0.24.0 TaskConfig 的报错原文「Package name must be in \'org/name\' format」），' +
+      'Python 只查「非空」（harbor_task_contract.py 第 92 行）。两者在同口径输入上会分叉：' +
+      'name = "demo" 时 JS=REJECT、Python=RECOMMEND。' +
+      '**权威归属仍标 python，但此条实质分歧以 JS 为准** —— 单段名字会让 harbor 的' +
+      'TaskModel.is_valid_dir 返回 False（实测过的下游后果），Python 的「非空」判据漏了格式。' +
+      '因此本节的 G-CONTRACT 对拍 fixture 一律用合法 org/name，' +
+      '把这个已知分歧隔离在「同口径比对」之外，并在此显式登记，避免它作为未记录分歧长期潜伏。',
     authority: 'python',
   },
   {
@@ -208,6 +221,90 @@ for (const entry of EXPECTED_DIVERGENCES) {
     typeof entry.reason === 'string' && entry.reason.length > 20 && declared,
     `权威=${entry.authority}`)
 }
+
+// ── 3) G-CONTRACT：两边**同口径执行**并比对结论 ──────────────────────────────
+//
+// 之前这一节只断言「差异有理由与归属」（上面那段），从不真的跑两边 ——
+// 于是 G-CONTRACT 的实际分歧（JS 读 environment.*，权威读 [agent]/[verifier]；
+// JS 把权威的 warn 全升级成 FAIL）在 22 项全绿下活了很久。
+// 这里补上真执行的对比：同一份 task.toml，两边结论必须同向。
+
+console.log('\n【G-CONTRACT】两边同口径执行（缺这一段时真实分歧曾被漏掉）')
+
+const toml = await import(new URL(
+  `file://${join(ROOT, 'packages/dsh-autoresearch/lib/toml.js').replace(/\\/g, '/')}`).href)
+
+async function compareContract(label, tomlText, expectation) {
+  const dir = await mkdtemp(join(tmpdir(), 'ars-contract-'))
+  try {
+    await writeFile(join(dir, 'task.toml'), tomlText, 'utf8')
+    const py = await runTool('harbor_task_contract.py', ['--task', dir])
+    const jsVerdict = gates.gateTaskContract(toml.parseTomlSubset(tomlText)).verdict
+    // 权威退出码：0=通过 1=硬失败 2=需人工确认（见 EXIT_SEMANTICS）。
+    const pyVerdict = py.exitCode === 0 ? 'RECOMMEND' : (py.exitCode === 1 ? 'REJECT' : 'NEEDS_EVIDENCE')
+    const agree = pyVerdict === jsVerdict
+    report(`  ${label}：JS=${jsVerdict} Python=${pyVerdict}`,
+      agree && (expectation === undefined || jsVerdict === expectation),
+      agree ? undefined : `两边结论不同向（Python rc=${py.exitCode}）`)
+    return { pyVerdict, jsVerdict }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+// 常见误写 `[agent] network_mode = "none"`：Harbor 原生会拒。
+// 旧 JS 因为读错段落而判 RECOMMEND —— 这正是最危险的那种分歧。
+await compareContract('误写 [agent].network_mode', `
+[task]
+name = "ablation/demo"
+
+[agent]
+network_mode = "none"
+`, 'REJECT')
+
+// 权威判 warn 的几项（environment_mode≠separate、顶层 artifacts/schema_version
+// 缺失）：JS 不得把它们升级成 FAIL。
+await compareContract('权威 warn 项不得被 JS 升级为 FAIL', `
+[task]
+name = "ablation/demo"
+
+[agent]
+network_mode = "public"
+
+[verifier]
+environment_mode = "shared"
+
+[environment]
+build_timeout_sec = 7200
+`, 'NEEDS_EVIDENCE')
+
+// 合法配置：两边都应通过。
+//
+// 注意 fixture 必须同时满足 **JS 侧的 QA15 资源判据**（教程 v0.3.8 L266）：
+// time_limit_seconds ≤7200、cpus 合计 ≤64、gpus ≤8、gpu_types ⊆ {H20,L20}。
+// Python 权威（harbor_task_contract.py）只管"会不会阻断原生加载"的四类契约问题，
+// 不查资源上限 —— 所以这两侧的覆盖范围本就不同，fixture 取交集才能同向。
+await compareContract('合法 task.toml', `
+schema_version = "1.0"
+artifacts = ["/workspace/solution"]
+
+[task]
+name = "ablation/demo"
+time_limit_seconds = 7200
+
+[agent]
+network_mode = "public"
+
+[verifier]
+network_mode = "no-network"
+environment_mode = "separate"
+
+[environment]
+build_timeout_sec = 7200
+cpus = 16
+gpus = 1
+gpu_types = ["H20"]
+`, 'RECOMMEND')
 
 // ── 结论 ────────────────────────────────────────────────────────────────────
 

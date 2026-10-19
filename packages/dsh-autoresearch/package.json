@@ -14,6 +14,8 @@
     "./lib/toml.js": "./lib/toml.js",
     "./lib/workflow.js": "./lib/workflow.js",
     "./lib/mode.js": "./lib/mode.js",
+    "./lib/trajectory.js": "./lib/trajectory.js",
+    "./lib/pack-scope.js": "./lib/pack-scope.js",
     "./lib/session-tasks.js": "./lib/session-tasks.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
@@ -29,6 +31,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

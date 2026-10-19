@@ -99,17 +99,49 @@ optimization_evidence
 
 模型的输出不参与身份构造：`provider`/`model`/`version`/`session_id` 全部由编排层写进命令行参数，模型改不了。因此共识脚本校验的身份字段是可信的。
 
-## 依赖解析的两个坑
+## 依赖解析的三个坑
 
 构建过程中实际踩到并修复：
 
-1. **`@deepseek-ai/*` 裸导入无法从插件目录解析。** 插件目录没有 `node_modules`，harness 把 profile 的依赖闭包镜像到 `$DSH_HOME/profiles/node_modules`。因此 `@deepseek-ai/dsh-tools` 必须声明为**真实 dependency**（而非 peerDependency），pnpm 才会把它装进 profile。
+1. **`@deepseek-ai/dsh-tools` 必须声明为 `peerDependencies`，不是 dependency。**
+
+   > ⚠️ 本节原文写反了（曾写"必须声明为真实 dependency"）。照做会引入一个致命缺陷，
+   > 2026-10 已纠正。**不要**把它改成 dependency。
+
+   原因：`dsh-tools` 里有**模块级 Symbol**（`TOOL_RUNTIME_SCHEDULER`）。声明成
+   dependency 会让 profile 里出现第二份物理副本，两个副本各有一个 Symbol，
+   agent-loop 取不到调度器 —— 所有工具调用当场崩：
+
+   ```
+   Cannot read properties of undefined (reading 'prepare')
+   ```
+
+   实测踩过。正确做法是声明为 peer，让宿主提供唯一实例；`install-profile.mjs` 还会
+   主动删掉 profile 里遗留的副本（`HOST_PROVIDED`）以保证唯一。
+
+   顺带澄清目录布局：依赖闭包是**按 profile** 镜像的，路径是
+   `$DSH_HOME/profiles/<name>/node_modules`；`$DSH_HOME/profiles/node_modules`
+   这个目录不存在。profile 的 `node_modules` 里只放本项目包，`@deepseek-ai/*`
+   由仓库根的 `node_modules` 提供（Node 模块解析会一路向上找到）。
 
 2. **pnpm 对 `file:` 本地依赖会缓存副本。** 改了源码但版本号未变时，profile 里仍是旧副本。`scripts/install-profile.mjs` 因此在安装前先删除 profile 中的既有副本，强制重新链接。
 
+3. **运行期一律用 Node 模块解析，不要用「往上够仓库根」的路径算术。**
+
+   `join(HERE, '..', '..', '..')` 只在从源码仓库运行时等于仓库根。装进 profile 后
+   `HERE` 落在 `<DSH_HOME>/profiles/<name>/node_modules/<pkg>/lib`，往上三级是
+   **profile 目录** —— `packages/...`、`build/...` 全都不存在。
+
+   实测后果：14 个门禁工具里 4 个（发布门那 4 个）解析为 null，双路质检恒返回
+   BLOCKED，API 校验恒报假阴性；而仓库侧测试因为读的是源码副本，全绿也发现不了。
+
+   正确写法是 `createRequire(import.meta.url).resolve('<pkg>/package.json')` ——
+   两种布局下都成立。`scripts/selftest-installed.mjs` 专门盯这一类缺陷（它加载
+   **安装副本**而不是源码），已接入 `npm run check`。
+
 另外两处 API 契约也需要对齐：
 
-3. **`output.schema` 用值 schema DSL，不是裸 JSON Schema。** 顶层 `required` 数组不被支持；必需性写在属性级 `required: true`，且对象必须显式声明 `additionalProperties`。
+4. **`output.schema` 用值 schema DSL，不是裸 JSON Schema。** 顶层 `required` 数组不被支持；必需性写在属性级 `required: true`，且对象必须显式声明 `additionalProperties`。
 
 4. **系统提示章节的 `order` 必须是有限数字。** 取值来自 `ctx.systemPrompt.getSectionOrder(<已知名称>)`，未知名称返回 `undefined`。
 

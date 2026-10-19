@@ -1,0 +1,49 @@
+{
+  "name": "dsh-model-council",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "模型议会：多模型按身份（议员 / 对抗者 / 裁决者）对抗审议一个方向，独立工作台面板。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./lib/roles.js": "./lib/roles.js",
+    "./lib/protocols.js": "./lib/protocols.js",
+    "./lib/config.js": "./lib/config.js",
+    "./lib/engine.js": "./lib/engine.js",
+    "./lib/mode.js": "./lib/mode.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    }
+  },
+  "dependencies": {
+    "dsh-autoresearch": "file:../dsh-autoresearch",
+    "dsh-autoresearch-api": "file:../dsh-autoresearch-api",
+    "zod": "^4.6.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

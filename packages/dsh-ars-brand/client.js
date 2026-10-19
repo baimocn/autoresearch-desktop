@@ -137,8 +137,8 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-secondary,#94a3b8)}
 .ars-facts{margin:2px 0 0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;
   padding:14px 16px;border-radius:10px;
-  background:var(--dsw-alias-bg-elevated,rgba(148,163,184,.06));
-  border:1px solid var(--dsw-alias-border-secondary,rgba(148,163,184,.2))}
+  background:var(--dsw-alias-bg-layer-2,rgba(148,163,184,.06));
+  border:1px solid var(--dsw-alias-border-l2,rgba(148,163,184,.2))}
 .ars-fact{display:contents}
 .ars-facts dt{font-size:12px;font-weight:600;white-space:nowrap;
   color:var(--dsw-alias-label-secondary,#94a3b8)}

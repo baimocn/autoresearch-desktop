@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "taskId": null,
+  "phase": "intake",
+  "createdAt": "2026-10-16T03:26:06.052Z",
+  "updatedAt": "2026-10-16T04:02:51.467Z",
+  "history": [
+    {
+      "kind": "gate",
+      "gate": "G-SELECT",
+      "verdict": "RECOMMEND",
+      "at": "2026-10-16T03:26:06.053Z"
+    },
+    {
+      "kind": "gate",
+      "gate": "G-SELECT",
+      "verdict": "NEEDS_EVIDENCE",
+      "at": "2026-10-16T04:02:51.461Z"
+    },
+    {
+      "kind": "gate",
+      "gate": "G-SELECT",
+      "verdict": "RECOMMEND",
+      "at": "2026-10-16T04:02:51.467Z"
+    }
+  ],
+  "gateResults": {
+    "G-SELECT": {
+      "verdict": "RECOMMEND",
+      "at": "2026-10-16T04:02:51.467Z",
+      "milestone": "M1",
+      "checks": [
+        {
+          "id": "G0.1",
+          "status": "PASS",
+          "detail": "论文标题已提供：Time-Aware World Model",
+          "fix": null
+        },
+        {
+          "id": "G0.2",
+          "status": "PASS",
+          "detail": "官方仓库标识合法：anh-nn01/Time-Aware-World-Model",
+          "fix": null
+        },
+        {
+          "id": "G0.3",
+          "status": "PASS",
+          "detail": "许可边界已确认：MIT",
+          "fix": null
+        },
+        {
+          "id": "G0.4",
+          "status": "PASS",
+          "detail": "优化面为方法级：已声明",
+          "fix": null
+        },
+        {
+          "id": "G0.5",
+          "status": "PASS",
+          "detail": "题库查重已完成",
+          "fix": null
+        },
+        {
+          "id": "G0.6",
+          "status": "PASS",
+          "detail": "指标为物理量，U 可构造",
+          "fix": null
+        },
+        {
+          "id": "G0.7",
+          "status": "PASS",
+          "detail": "主表 benchmark 数 12 ≥ 3",
+          "fix": null
+        },
+        {
+          "id": "G0.8",
+          "status": "PASS",
+          "detail": "消融数 1 ≥ 1",
+          "fix": null
+        },
+        {
+          "id": "G0.9",
+          "status": "PASS",
+          "detail": "baseline 口径差 0.0 ≤ 15",
+          "fix": null
+        },
+        {
+          "id": "G0.10",
+          "status": "PASS",
+          "detail": "优化空间充足（与 G1.6 同口径）：R_norm=0.5990 ∈ [0.15, 0.8]，Δ=26.7σ_B ≥ 3σ",
+          "fix": null
+        }
+      ]
+    }
+  },
+  "deliverableChecks": {},
+  "identity": null,
+  "runs": {},
+  "frozenManifest": {},
+  "intentionalChanges": []
+}

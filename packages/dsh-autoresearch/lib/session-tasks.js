@@ -12,8 +12,8 @@
  * @module dsh-autoresearch/lib/session-tasks
  */
 
-import { readFile, writeFile, mkdir, stat, readdir } from 'node:fs/promises'
-import { join, resolve, isAbsolute } from 'node:path'
+import { readFile, writeFile, mkdir, stat, readdir, rename } from 'node:fs/promises'
+import { join, resolve, isAbsolute, basename, dirname } from 'node:path'
 
 /** 任务根的判定标记：目录里存在其中之一即视为任务根。 */
 /**
@@ -42,14 +42,59 @@ export function resolveDshHome(explicit) {
 
 const bindingsPath = (dshHome) => join(dshHome, 'autoresearch-session-tasks.json')
 
-async function readDoc(dshHome) {
+/**
+ * 把损坏的文件改名保留，返回备份路径。
+ *
+ * 之所以隔离而不是直接删：这些文件承载用户数据（会话绑定、任务登记），
+ * 坏了也不该由程序替他决定丢弃。
+ */
+async function quarantine(path) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const backup = `${path}.corrupt-${stamp}`
+  await rename(path, backup)
+  return backup
+}
+
+/**
+ * 读一个 JSON 文档：**只有文件不存在才算空态**。
+ *
+ * 解析失败或结构不符一律隔离原文件并抛错，绝不返回空对象 —— 因为调用方随后
+ * 会写回整个文件，那会把用户原有数据静默抹掉。这个形态实测踩过：绑定文件里
+ * 一个坏字节，下一次绑定时整个文件被重置为空，**所有会话**的任务绑定一起消失。
+ *
+ * @returns 解析结果；文件不存在时返回 null（调用方给默认值）
+ */
+export async function readJsonDoc(path, { isValid = () => true } = {}) {
+  let raw
   try {
-    const parsed = JSON.parse(await readFile(bindingsPath(dshHome), 'utf8'))
-    if (parsed && typeof parsed === 'object' && parsed.bindings && typeof parsed.bindings === 'object') {
-      return parsed
-    }
-  } catch { /* 不存在或损坏都当作空绑定：缓存性质，不阻塞 */ }
-  return { version: 1, bindings: {} }
+    raw = await readFile(path, 'utf8')
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    const backup = await quarantine(path)
+    throw new Error(`${path} 不是合法 JSON（${error.message}）。` +
+      `原文件已保留为 ${backup}；确认无需恢复后删掉它即可重建。`)
+  }
+  if (!isValid(parsed)) {
+    const backup = await quarantine(path)
+    throw new Error(`${path} 的结构不符合预期。` +
+      `原文件已保留为 ${backup}；确认无需恢复后删掉它即可重建。`)
+  }
+  return parsed
+}
+
+async function readDoc(dshHome) {
+  const path = bindingsPath(dshHome)
+  const parsed = await readJsonDoc(path, {
+    isValid: (value) => value !== null && typeof value === 'object'
+      && value.bindings !== null && typeof value.bindings === 'object',
+  })
+  return parsed ?? { version: 1, bindings: {} }
 }
 
 async function writeDoc(dshHome, doc) {
@@ -168,17 +213,89 @@ export async function detectTaskRoot(cwd) {
 const workbenchPath = (dshHome) => join(dshHome, 'autoresearch-workbench.json')
 
 /**
+ * 按 Task ID 在若干搜索根下定位 `<taskId>` 目录。
+ *
+ * 为什么需要这个函数（实测事故）：`config.taskRoot` 默认是 `'.'`，
+ * `makeRootResolver` 于是返回 `process.cwd()`。桌面壳把 `process.cwd()` 设成
+ * `.dsh-home/launch-root`，所以即便调用方明确传了 `taskId: 'AutoRe1853'`，
+ * 脚手架仍然落在 launch-root —— 任务 ID 在路径解析里**完全不参与**，
+ * 已知的任务身份被静默丢弃，题包写进了工作台默认启动目录。
+ *
+ * 本函数让 taskId 真正参与定位：在搜索根的直接子目录里找同名任务根。
+ * 找不到就返回 null，由调用方决定是新建还是报错（绝不猜测写哪）。
+ *
+ * @returns {{found: string}|{found: null, searched: string[]}}
+ */
+export async function locateTaskRootById(taskId, searchRoots) {
+  if (typeof taskId !== 'string' || taskId.trim() === '') return { found: null, searched: [] }
+  const id = taskId.trim()
+  const searched = []
+  const seen = new Set()
+  for (const root of searchRoots) {
+    if (typeof root !== 'string' || root.trim() === '') continue
+    const base = isAbsolute(root) ? resolve(root) : resolve(process.cwd(), root)
+    if (seen.has(base)) continue
+    seen.add(base)
+    searched.push(base)
+
+    // 情况一：搜索根本身就是该任务（目录名匹配且具备任务根标记）
+    if (basename(base).toLowerCase() === id.toLowerCase() && await isTaskRoot(base)) {
+      return { found: base }
+    }
+    // 情况二：搜索根的直接子目录里有同名任务根
+    let children = []
+    try {
+      children = await readdir(base, { withFileTypes: true })
+    } catch { continue }
+    for (const child of children) {
+      if (!child.isDirectory()) continue
+      if (child.name.toLowerCase() !== id.toLowerCase()) continue
+      const candidate = join(base, child.name)
+      if (await isTaskRoot(candidate)) return { found: candidate }
+    }
+  }
+  return { found: null, searched }
+}
+
+/**
+ * 读出「已知任务所在目录的父目录」，作为按 ID 定位的搜索根。
+ *
+ * 依据：工作台登记表里已有的任务根，其父目录通常就是同批任务的存放地
+ * （实测：AutoRe1841 / AutoRe1852 / auto2604 并列在
+ *  `D:\Desktop\论文评测任务\` 下）。把 launch-root 排除在外 —— 它是
+ * 工作台默认启动目录，不是任务存放地，让它当搜索根等于把事故点当基准。
+ *
+ * 只读、失败即返回空数组：定位是尽力而为的增强，不因缓存损坏阻断初始化。
+ */
+export async function knownTaskParents(dshHome) {
+  let parsed
+  try {
+    parsed = await readJsonDoc(workbenchPath(dshHome), {
+      isValid: (value) => value !== null && typeof value === 'object' && Array.isArray(value.taskRoots),
+    })
+  } catch { return [] }
+  const parents = new Set()
+  for (const root of parsed?.taskRoots ?? []) {
+    if (typeof root !== 'string' || root.trim() === '') continue
+    const parent = dirname(root)
+    if (basename(parent) === 'launch-root') continue
+    parents.add(parent)
+  }
+  return [...parents]
+}
+
+/**
  * 把一个任务根登记进工作台清单（幂等）。
  *
  * 「绑定会话」与「登记工作台」是同一件事的两面：模型/用户绑定了一个任务，
  * 工作台就该看见它 —— 之前要求两边各做一次手工操作，是设计缺陷。
  */
 export async function registerTaskInWorkbench(dshHome, taskRoot) {
-  let document = { version: 1, taskRoots: [] }
-  try {
-    const parsed = JSON.parse(await readFile(workbenchPath(dshHome), 'utf8'))
-    if (Array.isArray(parsed?.taskRoots)) document = { version: 1, taskRoots: parsed.taskRoots }
-  } catch { /* 不存在或损坏从空清单开始 */ }
+  // 损坏时隔离并抛错，而不是从空清单开始 —— 后者会把用户登记过的任务全抹掉。
+  const parsed = await readJsonDoc(workbenchPath(dshHome), {
+    isValid: (value) => value !== null && typeof value === 'object' && Array.isArray(value.taskRoots),
+  })
+  const document = { version: 1, taskRoots: parsed?.taskRoots ?? [] }
   if (!document.taskRoots.includes(taskRoot)) {
     document.taskRoots.push(taskRoot)
     await mkdir(dshHome, { recursive: true })

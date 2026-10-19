@@ -138,3 +138,73 @@ ui-layout 的隐含契约（overflow:hidden 的 centerCol + 自滚动子面板�
 - `parentPath()` 做左截断，避免长路径换行。
 
 验收脚本：`scripts/devtools/cdp-verify-ui-structure.mjs`（CDP，逐页巡检 + 结构断言 + 截图）。
+
+## 轨迹页判读（2026-10-14，四项修复）
+
+「核查 → 轨迹」页此前有三处**各写一遍、各错各的**，全部由真实任务暴露。
+现在判据统一在 `packages/dsh-autoresearch/lib/trajectory.js`（纯函数、可测）。
+
+### 1. 「没出分」不是「失败」
+
+旧实现用 `status !== 'ok'` 计数，于是：
+
+| 任务 | 轨迹 | 总轮次 | 旧显示「失败」 |
+|---|---|---|---|
+| AutoRe1841 | seed | 9 | **6** |
+| AutoRe1852 | codex | 13 | **13** |
+| AutoRe1852 | seed | 8 | **8** |
+
+被判为失败的 `static_screen_no_run` / `blocked_no_compute` / `partial_progress_no_metric`
+等，都是 SOP 要求的**如实标注**。后果是激励反了：如实标注的人看到全红，
+谎报 `ok` 的人显示全绿。
+
+现在分三桶：`scored`（有分）/ `failed`（**开头**是失败词）/ `no_score`（其余）。
+失败判据限定在**开头**，因为失败词出现在中间通常是在描述"关于失败的事" ——
+实测反例 `corrected_prior_error`（更正了此前的错误）按"包含 error"会被算成失败。
+页面同时把**原始 status 分布**原样列出，判据保守就把判断材料一并给出。
+
+### 2. 「最佳分」必须按指标方向取
+
+`/trajectory` 路由用 `Math.max` 硬取，而同一文件的 `trajectoryDigest` 却已按方向取 ——
+两份实现漂移。minimize 题会把**最差**一轮报成最佳。现在共用
+`summarizeRounds(rounds, direction)`，且 **direction 为 null 时不猜**，
+显示「最佳分（方向未知）」而不是给一个可能是错的数。
+
+顺带修掉 `metricDirectionOf` 的字段形状 bug：它读 `comparison.metric.direction`，
+而真实文件是 `comparison.metric`（字符串）+ `comparison.direction`（顶层），
+于是 AutoRe1841 的方向读成 null。现改为委托 gates 包的 `readTaskMetricDirection`
+（唯一真源，见 `docs/upstream-defects.md` D2 的两层口径说明）。
+
+### 3. 标定常数不是得分
+
+`score` 按 SOP 是「本轮方法的 Public/Dev 原始指标实测值」。而 `R_norm`
+（Reference 在评分公式下的位置）是**标定常数**：B/R/U 一定就不变。
+实测 AutoRe1841 有三轮把 `reference_normalized`（0.793603）填进 score，
+页面显示"最佳分 0.793603"，看起来像跑出了成绩。
+
+- **读取侧**：值与该题标定常数逐位相同时，单元格标「标定常数?」（悬浮说明来源）；
+  若**所有**出分轮次都是标定常数，页首标「本轮次无真实得分」。
+- **写入侧**：`autoresearch_trajectory` 工具把它作为 `problems` 告警 ——
+  **只告警、不拒写、不改数**：轨迹是专家的原始记录，平台不该替作者决定什么能记。
+
+### 4. 双轨是否真的开跑
+
+**轨迹文件存在 ≠ 双轨跑过。** 出题过程本身也会记轮次 —— 实测 AutoRe1841 的
+9 轮全是静态筛查/绑定/阻塞记录，而 `run_summary.json` 的
+`agent_execution[*].duration_hours` **全是 null**（SOP 规则 8 要求两条轨道各 ≥10h）。
+工作台此前把它显示成"轨迹已有 9 轮、有最佳分"，看起来像双轨已完成。
+
+现在轨迹页与任务卡都读时长证据，未开跑时明确标注「双轨尚未开跑」并说明
+"下方轮次是出题过程记录"。
+
+### 验收
+
+- `scripts/selftest-trajectory.mjs` —— 64 项，含合成数据与真实任务端到端。
+- `scripts/devtools/cdp-verify-trajectory.mjs` —— 真实渲染验收。
+  断言**以接口返回为准**而非写死数据条件：这些文件正被出题会话实时改写
+  （实测验收过程中轨迹从 10 轮变 11 轮、标定常数被清成 null）。
+
+### 未修的一项（属于任务数据，不是显示缺陷）
+
+AutoRe1841 的 11 轮**全部** `retained_best: true`。SOP 要求选**唯一** best_method，
+全部标 best 等于没选。这是数据问题，平台不擅自改动 —— 留给作者决定。

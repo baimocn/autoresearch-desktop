@@ -17,12 +17,39 @@
  */
 
 import { readdir, readFile } from 'node:fs/promises'
-import { join, dirname, extname } from 'node:path'
+import { join, dirname, extname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PKG_ROOT = join(ROOT, 'node_modules', '@deepseek-ai')
-const UI_FILE = join(ROOT, 'packages', 'dsh-autoresearch-ui', 'client.js')
+
+/**
+ * 要检查的浏览器半边**全部** client.js。
+ *
+ * 曾经只写死 dsh-autoresearch-ui 一个文件 —— 于是新面板（如模型议会）引用了
+ * 不存在的 token 时，这道检查完全看不见它，而「写错 token 名会静默回退」
+ * 正是本脚本存在的理由。改为扫描 packages/ 下的所有 client.js，
+ * 新面板自动纳入，不需要记得来改这里。
+ */
+async function collectClientFiles() {
+  const packagesDir = join(ROOT, 'packages')
+  const out = []
+  let entries
+  try {
+    entries = await readdir(packagesDir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const file = join(packagesDir, entry.name, 'client.js')
+    try {
+      await readFile(file, 'utf8')
+      out.push(file)
+    } catch { /* 没有浏览器半边的包，跳过 */ }
+  }
+  return out.sort()
+}
 
 /** 递归收集目录下的所有文件（限定体积，跳过超大 bundle）。 */
 async function walk(dir, out = [], depth = 0) {
@@ -93,23 +120,35 @@ if (defined.size === 0) {
   process.exit(1)
 }
 
-const uiText = await readFile(UI_FILE, 'utf8')
-const referenced = collectReferencedTokens(uiText)
-console.log(`  UI 源码引用了 ${referenced.size} 个 --dsw-* token`)
-console.log()
-
-// 逐个比对：引用的每个 token 都必须在 DSH 里真实存在。
-const bogus = []
-for (const [token, line] of referenced) {
-  if (!defined.has(token)) bogus.push({ token, line })
+const clientFiles = await collectClientFiles()
+if (clientFiles.length === 0) {
+  console.log('  FAIL 没找到任何 client.js —— 检查 packages/ 是否存在')
+  process.exit(1)
 }
+console.log(`  待检查的浏览器半边：${clientFiles.length} 个 client.js`)
+
+// 逐个文件比对：引用的每个 token 都必须在 DSH 里真实存在。
+// `referenced` 是全文件的并集（供「关键 token 是否被用到」判断），
+// `bogus` 保留**出错的文件与行号** —— 多文件时只报行号会定位不到。
+const referenced = new Map()
+const bogus = []
+for (const file of clientFiles) {
+  const text = await readFile(file, 'utf8')
+  const rel = relative(ROOT, file).split('\\').join('/')
+  for (const [token, line] of collectReferencedTokens(text)) {
+    if (!referenced.has(token)) referenced.set(token, `${rel}:${line}`)
+    if (!defined.has(token)) bogus.push({ token, file: rel, line })
+  }
+}
+console.log(`  共引用 ${referenced.size} 个不同的 --dsw-* token`)
+console.log()
 
 record('所有引用的 token 名都真实存在', bogus.length === 0,
   bogus.length === 0 ? `${referenced.size} 个全部命中` : `${bogus.length} 个不存在`)
 if (bogus.length > 0) {
   console.log()
   console.log('  不存在的 token（会被静默回退，主题适配失效）：')
-  for (const b of bogus) console.log(`    client.js:${b.line}  ${b.token}`)
+  for (const b of bogus) console.log(`    ${b.file}:${b.line}  ${b.token}`)
 }
 console.log()
 

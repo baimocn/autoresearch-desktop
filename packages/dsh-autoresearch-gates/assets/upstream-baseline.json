@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-10-13T01:08:11.002Z",
+  "generatedAt": "2026-10-16T04:00:55.999Z",
   "note": "L1 记录层：有意升级上游后应重新生成本基线，使被动漂移可被区分。",
   "assets": [
     {
@@ -88,8 +88,8 @@
       "logical": "sop/tools/feasibility_gate.py",
       "role": "sop",
       "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/feasibility_gate.py",
-      "bytes": 7216,
-      "sha256": "78fafe632baa671555eddf399a0c31ca096186f8b7516e911c61d0554fd8d1fc"
+      "bytes": 12509,
+      "sha256": "f7bf641db1542ad7cee3a37d8cf320e8f69725976940cb53209d081bdded94a2"
     },
     {
       "source": "own-assets",
@@ -104,8 +104,8 @@
       "logical": "sop/tools/paper_screen.py",
       "role": "sop",
       "relativePath": "packages/dsh-autoresearch-gates/assets/sop/tools/paper_screen.py",
-      "bytes": 11459,
-      "sha256": "05524f5e56b10324957eb8dec6c5bf95dd5f251b3a91e2c3dff808d3f4a0c3dd"
+      "bytes": 12134,
+      "sha256": "d22564e35f234c6f69c442161ca3ef6fab2b85b999869e340a4af3367ddc2e9e"
     },
     {
       "source": "own-assets",

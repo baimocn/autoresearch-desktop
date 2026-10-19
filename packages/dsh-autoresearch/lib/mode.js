@@ -136,9 +136,13 @@ export function installMode(ctx, deps) {
     ctx.effect(() => ctx.systemPrompt.section({
       name: 'autoresearch:mode',
       order: ctx.systemPrompt.getSectionOrder('TOOL_COMPUTER_USE') + 60,
-      // 章节的输入只有「是否激活」：AssembleContext 无 agent 字段，
-      // 无法按会话求值。交互进入由 interactiveActive 跟踪，
-      // 配置驱动激活由 startActive 提供。
+      // 章节的 text 回调**确实能拿到 agent**（`assembleContextFor(agent, signal)`
+      // → `{ agent, scope, signal }`，`dsh-system-prompt/lib/index.js:342` 把它传给
+      // `section.text(context)`；`dsh-plan-mode` 正是这么按会话求值的）。
+      // 早期注释写「AssembleContext 无 agent 字段」，那条是错的 —— 见
+      // packages/dsh-model-council/lib/mode.js 用 agent 按会话求值的写法。
+      // 这里仍保留全局标志只是**不改动既有行为**（改它要重验工作流模式），
+      // 不是因为没有 agent。
       text: () => renderModePolicy(startActive || interactiveActive),
     }), 'autoresearch: mode section')
   }
@@ -216,7 +220,14 @@ export function installMode(ctx, deps) {
           }
 
           // 中途进入：agent 已存在，agent/created 不会再触发 —— 限制现在套上。
-          if (mode.active === true) applyRestriction(agent)
+          //
+          // 判据必须是 wanted || active，不能只看 active：
+          // foldMode 在 `command/done` 才把 wanted 落到 active，而 harness 是先追加
+          // `command/run`、**再**调用 handler、最后才追加 `command/done`。所以 handler
+          // 执行期间 active 仍是**进入前**的值（新会话为 false），只看 active 会让
+          // 限制永远套不上，而 agent/created 早已错过 —— 结果是 /autoresearch 变成
+          // 「只提醒不约束」，模型照样能调 remote_submit / qa_dual。
+          if (mode.wanted === true || mode.active === true) applyRestriction(agent)
 
           const { phase } = await buildDirective(session)
           return {

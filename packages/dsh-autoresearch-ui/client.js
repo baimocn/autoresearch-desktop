@@ -37,8 +37,21 @@ window.__ModuleLoader__.load({
   /* 状态色：优先取 DSH 语义 token，回退值只作兜底。
      注意回退值是**浅色主题下也成立**的颜色 —— 早期版本把回退写成深色
      （如 rgba(15,23,42,.35)），一旦 token 名写错就会静默变成深色块。 */
-  --aw-accent:var(--dsw-alias-brand-primary,#3b6fe0);
+  /* 强调色 = 用于**边框 / 焦点环 / 强调文字**。必须是可读的彩色，不能是前景白。
+     这里踩过一个只有肉眼看截图才能发现的坑：--dsw-alias-brand-primary 在 DSH
+     深色主题里是 **#f9fafb（近白）** —— 它是"品牌前景色"，不是填充色。把它当
+     背景用（按钮、选中标签）就得到白底 + 白字 = 完全看不见。
+     DOM 断言全绿（它量的是 --aw-ink 对 --aw-bg 的对比度），实际控件是空白的。
+     现在改用真正的强调色（#7aaaff），填充场景另用下面的 --aw-fill-* 一对。
+     （注意：这段在模板字符串里，注释中不能出现反引号。） */
+  --aw-accent:var(--dsw-alias-state-business-primary,#3b6fe0);
   --aw-accent-soft:color-mix(in srgb,var(--aw-accent) 14%,transparent);
+  /* 主按钮填充 + 其上的文字色：这一对必须**成对**使用，且都取自 DSH 的
+     button-primary 配对（浅色下自动反转），不能拿 accent 当填充。 */
+  --aw-fill-primary:var(--dsw-alias-button-primary-fill,#3b6fe0);
+  --aw-on-fill-primary:var(--dsw-alias-label-primary-foreground,#fff);
+  /* 选中/激活的柔和填充（host 的 ghost-active 形态）：比纯色药丸更贴合宿主。 */
+  --aw-fill-active:var(--dsw-alias-button-ghost-active-fill,#43454a);
   --aw-ok:var(--dsw-alias-state-success-primary,#1a7f5a);
   --aw-ok-soft:color-mix(in srgb,var(--aw-ok) 14%,transparent);
   --aw-warn:var(--dsw-alias-state-warn-primary,#9a6700);
@@ -115,8 +128,8 @@ window.__ModuleLoader__.load({
   font-size:var(--aw-fs-md);padding:6px 13px;border-radius:var(--aw-r-ctl);cursor:pointer;
   transition:background .15s,color .15s,border-color .15s;white-space:nowrap}
 .aw-tab:hover{color:var(--aw-ink);background:var(--aw-idle-soft)}
-.aw-tab[data-on="1"]{background:var(--aw-accent);color:var(--dsw-alias-brand-text,#fff);font-weight:550;
-  border-color:var(--aw-accent)}
+.aw-tab[data-on="1"]{background:var(--aw-fill-active);color:var(--dsw-alias-label-primary,currentColor);font-weight:550;
+  border-color:var(--dsw-alias-button-ghost-active-border,var(--aw-line))}
 /* 二级标签用描边而非实心底，与一级入口区分层级。 */
 .aw-tab-sub[data-on="1"]{background:var(--aw-accent-soft);color:var(--aw-accent);
   border-color:var(--aw-accent);font-weight:550}
@@ -130,7 +143,7 @@ window.__ModuleLoader__.load({
 .aw-btn-xs{min-height:24px;padding:2px 9px;font-size:var(--aw-fs-xs)}
 .aw-btn:hover{border-color:var(--aw-accent);background:var(--aw-accent-soft)}
 .aw-btn:disabled{opacity:.45;cursor:default}
-.aw-btn[data-kind="primary"]{background:var(--aw-accent);border-color:var(--aw-accent);color:var(--dsw-alias-brand-text,#fff);font-weight:550}
+.aw-btn[data-kind="primary"]{background:var(--aw-fill-primary);border-color:var(--aw-fill-primary);color:var(--aw-on-fill-primary);font-weight:550}
 .aw-btn[data-kind="primary"]:hover{filter:brightness(1.1)}
 .aw-btn[data-kind="danger"]:hover{border-color:var(--aw-bad);color:var(--aw-bad);background:var(--aw-bad-soft)}
 .aw-btn[data-size="sm"]{min-height:26px;padding:3px 9px;font-size:var(--aw-fs-xs)}
@@ -138,13 +151,26 @@ window.__ModuleLoader__.load({
   min-height:30px;padding:5px 10px;border-radius:var(--aw-r-ctl);min-width:180px;flex:1 1 220px}
 .aw-input:focus{outline:none;border-color:var(--aw-accent)}
 
-.aw-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:var(--aw-fs-xs);font-weight:600;white-space:nowrap}
-.aw-badge i{width:6px;height:6px;border-radius:50%;flex:none}
-.aw-badge[data-tone="ok"]{color:var(--aw-ok);background:var(--aw-ok-soft)}
-.aw-badge[data-tone="warn"]{color:var(--aw-warn);background:var(--aw-warn-soft)}
-.aw-badge[data-tone="bad"]{color:var(--aw-bad);background:var(--aw-bad-soft)}
-.aw-badge[data-tone="info"]{color:var(--aw-accent);background:var(--aw-accent-soft)}
-.aw-badge[data-tone="idle"]{color:var(--aw-idle);background:var(--aw-idle-soft)}
+/* 徽章：状态由「彩色圆点 + 底色浅染」承担，文字用中性可读色。
+   为什么不用状态色当文字：--dsw-alias-state-*-primary 是**填充色**语义，
+   当文字用两个主题都不达标 —— 实测浅色下「非任务」1.48:1、「需关注」2.15:1、
+   「健康」2.28:1，深色下 idle 2.44:1（AA 要求 4.5:1）。
+   改成中性文字 + 彩色圆点后：状态照样一眼可见，文字两种主题都 ≥ 4.5:1。
+   （圆点此前没有背景色，等于不存在 —— 状态只靠文字色表达，这正是上面那个坑。） */
+.aw-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;
+  font-size:var(--aw-fs-xs);font-weight:600;white-space:nowrap;
+  color:var(--dsw-alias-label-secondary,#a1a1aa)}
+.aw-badge i{width:6px;height:6px;border-radius:50%;flex:none;background:currentColor}
+.aw-badge[data-tone="ok"]{background:var(--aw-ok-soft)}
+.aw-badge[data-tone="ok"] i{background:var(--aw-ok)}
+.aw-badge[data-tone="warn"]{background:var(--aw-warn-soft)}
+.aw-badge[data-tone="warn"] i{background:var(--aw-warn)}
+.aw-badge[data-tone="bad"]{background:var(--aw-bad-soft)}
+.aw-badge[data-tone="bad"] i{background:var(--aw-bad)}
+.aw-badge[data-tone="info"]{background:var(--aw-accent-soft)}
+.aw-badge[data-tone="info"] i{background:var(--aw-accent)}
+.aw-badge[data-tone="idle"]{background:var(--aw-idle-soft)}
+.aw-badge[data-tone="idle"] i{background:var(--aw-idle)}
 
 .aw-card{position:relative;background:var(--aw-bg);border:1px solid var(--aw-line);border-radius:var(--aw-r-box);padding:var(--aw-sp-4) var(--aw-sp-4) var(--aw-sp-3) calc(var(--aw-sp-4) + 3px);
   overflow:hidden;transition:border-color .15s,box-shadow .15s}
@@ -173,7 +199,7 @@ window.__ModuleLoader__.load({
 .aw-step[data-done="1"]::before,.aw-step[data-done="1"]::after{background:var(--aw-accent)}
 .aw-step i{width:18px;height:18px;border-radius:50%;border:2px solid var(--aw-line);background:var(--aw-bg-deep);z-index:1;
   display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--aw-ink-2);font-style:normal}
-.aw-step[data-state="done"] i{background:var(--aw-accent);border-color:var(--aw-accent);color:var(--dsw-alias-brand-text,#fff)}
+.aw-step[data-state="done"] i{background:var(--aw-accent);border-color:var(--aw-accent);color:var(--aw-on-fill-primary)}
 .aw-step[data-state="current"] i{border-color:var(--aw-accent);color:var(--aw-accent);box-shadow:0 0 0 3px var(--aw-accent-soft)}
 .aw-step span{font-size:var(--aw-fs-xs);color:var(--aw-ink-2);text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .aw-step[data-state="current"] span{color:var(--aw-accent);font-weight:600}
@@ -431,7 +457,13 @@ window.__ModuleLoader__.load({
                   boxTone: missing > 0 ? 'bad' : undefined,
                 }),
                 (codex?.rounds ?? 0) + (seed?.rounds ?? 0) > 0
-                  ? h(Metric, { value: `${codex?.rounds ?? 0}+${seed?.rounds ?? 0}`, label: '轨迹轮次' })
+                  ? h(Metric, {
+                    value: `${codex?.rounds ?? 0}+${seed?.rounds ?? 0}`,
+                    // 双轨未开跑时如实标明：这些轮次是出题过程记录，
+                    // 不是两条长跑。否则「轨迹轮次 9」会被读成双轨已跑过。
+                    label: card.dualTrack?.started === false ? '轨迹轮次（双轨未开跑）' : '轨迹轮次',
+                    boxTone: card.dualTrack?.started === false ? 'warn' : undefined,
+                  })
                   : null,
                 codex?.best !== null && codex?.best !== undefined
                   ? h(Metric, { value: String(codex.best), label: 'codex 最佳分' })
@@ -763,7 +795,46 @@ window.__ModuleLoader__.load({
       if (loading) return h('p', { className: 'aw-sub' }, '加载中…')
       if (error !== null) return h('p', { className: 'aw-note', style: { color: 'var(--aw-bad)' } }, error)
 
+      const stats = data?.stats ?? null
+      const dual = data?.dualTrack ?? null
+      // 「未出分」不是失败：blocked_no_compute / *_no_run 这类是**诚实标注**的
+      // 执行状态。早先一律计成「失败」，实测 AutoRe1852 显示 13/13 全失败 ——
+      // 如实标注的人看到全红、谎报 ok 的人显示全绿，激励正好反了。
+      const statusEntries = Object.entries(stats?.statusKinds ?? {})
+
       return h('div', null,
+        // 双轨是否真的开跑 —— 放最前，因为「轨迹里有轮次」极易被误读成
+        // 「双轨跑完了」。实测 AutoRe1841/1852 的轮次全是出题过程记录。
+        dual !== null && dual.started === false
+          ? h('div', {
+            className: 'aw-box',
+            style: { marginBottom: 10, borderLeft: '3px solid var(--aw-warn)', padding: '8px 12px' },
+          },
+          h('b', { style: { fontSize: 'var(--aw-fs-sm)' } }, '双轨尚未开跑'),
+          h('p', {
+            style: { margin: '4px 0 0', fontSize: 'var(--aw-fs-xs)', color: 'var(--aw-ink-2)', lineHeight: 1.6 },
+          }, `${dual.note} 下方轮次是出题过程记录，不代表两条长程已完成。`))
+          : null,
+        dual !== null && dual.started === true
+          ? h('div', { className: 'aw-box', style: { marginBottom: 10, padding: '8px 12px' } },
+            h('b', { style: { fontSize: 'var(--aw-fs-sm)' } }, '双轨已开跑'),
+            h('p', { style: { margin: '4px 0 0', fontSize: 'var(--aw-fs-xs)', color: 'var(--aw-ink-2)' } },
+              dual.tracks.map((item) => `${item.model ?? item.runtime ?? '?'}：`
+                + (item.durationHours === null ? '时长缺失' : `${item.durationHours}h`)).join(' · ')))
+          : null,
+        // 所有出分轮次其实都是标定常数 ⇒ 这一轨从未产出真实得分。
+        data?.calibrationOnly === true
+          ? h('div', {
+            className: 'aw-box',
+            style: { marginBottom: 10, borderLeft: '3px solid var(--aw-bad)', padding: '8px 12px' },
+          },
+          h('b', { style: { fontSize: 'var(--aw-fs-sm)' } }, '本轮次无真实得分'),
+          h('p', {
+            style: { margin: '4px 0 0', fontSize: 'var(--aw-fs-xs)', color: 'var(--aw-ink-2)', lineHeight: 1.6 },
+          }, '所有带数值的 score 都与该题的标定常数逐位相同（B/R/U 定后不变），'
+            + '不是本轮方法的实测得分。下方「最佳分」因此不代表任何实际成绩。'))
+          : null,
+
         h('div', { style: { display: 'flex', gap: 6, marginBottom: 12 } },
           [['codex', 'Codex + GPT-5.6 Sol'], ['seed', 'Codex + Seed 2.1 Turbo']].map(([id, label]) =>
             h('button', {
@@ -774,27 +845,77 @@ window.__ModuleLoader__.load({
           ? h(EmptyState, { title: '暂无轮次记录' }, h('p', null, data?.note ?? '在对话里用 autoresearch_trajectory 记录每轮迭代。'))
           : h(React.Fragment, null,
             h('div', { className: 'aw-metrics', style: { marginBottom: 10 } },
-              h(Metric, { value: String(data.stats.total), label: '总轮次' }),
-              h(Metric, { value: String(data.stats.scored), label: '出分轮次' }),
-              h(Metric, { value: String(data.stats.failed), label: '失败', tone: data.stats.failed > 0 ? 'bad' : undefined }),
-              h(Metric, { value: String(data.stats.bestCount), label: '最佳标记' }),
-              h(Metric, { value: data.stats.bestScore === null ? '—' : String(data.stats.bestScore), label: '最佳分', tone: 'ok' }),
-              h(Metric, { value: data.stats.latestScore === null ? '—' : String(data.stats.latestScore), label: '最新分' })),
+              h(Metric, { value: String(stats.total), label: '总轮次' }),
+              h(Metric, {
+                value: String(stats.scored), label: '出分轮次',
+                boxTone: stats.scored === 0 ? 'warn' : undefined,
+              }),
+              // 中性呈现：如实标注的「未出分」是正常状态，不该染红。
+              h(Metric, { value: String(stats.noScore ?? 0), label: '未出分' }),
+              stats.failed > 0
+                ? h(Metric, { value: String(stats.failed), label: '失败', boxTone: 'bad', tone: 'bad' })
+                : null,
+              h(Metric, { value: String(stats.bestCount), label: '最佳标记' }),
+              h(Metric, {
+                value: stats.bestScore === null ? '—' : String(stats.bestScore),
+                // 方向未知时不假装能取最佳 —— 如实标出。
+                label: stats.direction === null ? '最佳分（方向未知）' : `最佳分（${stats.direction}）`,
+                tone: stats.bestScore === null ? undefined : 'ok',
+              }),
+              h(Metric, { value: stats.latestScore === null ? '—' : String(stats.latestScore), label: '最新分' })),
+
+            // 状态分布：判据保守（只有明确失败才计「失败」），所以把判断材料
+            // 一并给出 —— 使用者一眼能看到这些轮次究竟是什么状态。
+            statusEntries.length > 0
+              ? h('p', { className: 'aw-sub', style: { marginBottom: 8 } },
+                '轮次状态：',
+                statusEntries.map(([name, count], index) => h('span', { key: name },
+                  index > 0 ? ' · ' : '',
+                  h('code', { style: { fontFamily: 'var(--aw-mono)', fontSize: 'var(--aw-fs-xs)' } }, name),
+                  ` ×${count}`)))
+              : null,
+
             h('div', { className: 'aw-box', style: { padding: 10 } },
               h(MiniBars, { scores: data.rounds.map((round) => (typeof round.score === 'number' ? round.score : null)) })),
             h('div', { className: 'aw-scroll', style: { marginTop: 12 } },
               h('table', { className: 'aw-table' },
                 h('thead', null, h('tr', null,
-                  ['round', 'policy_name', 'status', 'score', 'retained_best', 'time'].map((column) =>
-                    h('th', { key: column }, column)))),
+                  TRAJECTORY_COLUMNS.map((column) => h('th', { key: column }, column)))),
                 h('tbody', null, data.rounds.map((round) => h('tr', { key: round.round },
-                  ['round', 'policy_name', 'status', 'score', 'retained_best', 'time'].map((column) =>
-                    h('td', { key: column },
-                      round[column] === null || round[column] === undefined
-                        ? h('span', { style: { color: 'var(--aw-ink-2)' } }, '—')
-                        : (column === 'retained_best' && round[column] === true
-                          ? h(Badge, { tone: 'ok' }, 'best')
-                          : String(round[column])))))))))))
+                  TRAJECTORY_COLUMNS.map((column) => h('td', { key: column },
+                    trajectoryCell(round, column, data.calibrationFlags))))))))))
+    }
+
+    /** 轨迹表的列顺序（表头与单元格共用，避免两处漂移）。 */
+    const TRAJECTORY_COLUMNS = ['round', 'policy_name', 'status', 'score', 'retained_best', 'time']
+
+    /**
+     * 渲染一个轨迹单元格。
+     *
+     * 抽成函数而不是内联三元链：`score` 列需要「标定常数」标注，
+     * 内联后三元嵌套到四层，括号数错一个就整段语法失败（实测踩过）。
+     */
+    function trajectoryCell(round, column, calibrationFlags) {
+      const value = round[column]
+      if (value === null || value === undefined) {
+        return h('span', { style: { color: 'var(--aw-ink-2)' } }, '—')
+      }
+      if (column === 'retained_best') {
+        return value === true ? h(Badge, { tone: 'ok' }, 'best') : String(value)
+      }
+      if (column !== 'score') return String(value)
+
+      // score 列：值与该题的标定常数（R 归一化值等）逐位相同时如实标出。
+      // 只陈述事实（"等于哪个字段"），不作指控、也不改数据。
+      const calibration = calibrationFlags?.[round.round] ?? null
+      if (calibration === null) return String(value)
+      return h('span', null,
+        String(value),
+        h('span', {
+          title: `该值与 ${calibration} 逐位相同 —— 那是标定常数（B/R/U 定后不变），`
+            + '不是本轮方法的实测得分',
+          style: { marginLeft: 4, color: 'var(--aw-warn)', fontSize: 'var(--aw-fs-xs)' },
+        }, '标定常数?'))
     }
 
     /** 双路配置器：两路各选路由 + 模型；保存到 DSH_HOME 供 qa_dual 使用。 */

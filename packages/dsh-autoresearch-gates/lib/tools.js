@@ -10,12 +10,51 @@
  * @module dsh-autoresearch-gates/tools
  */
 
-import { stat, readdir } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import { stat, readdir, readFile } from 'node:fs/promises'
+import { join, dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const ASSETS_ROOT = join(HERE, '..', 'assets')
+
+/** 本包名，用于把「自身资产」与「兄弟包资产」区分开。 */
+const OWN_PACKAGE = 'dsh-autoresearch-gates'
+
+/**
+ * 按包名解析兄弟包的**安装目录**。
+ *
+ * 这里刻意不用路径算术（`join(HERE,'..','..','..')` 再拼 `packages/<pkg>`）：
+ * 那个表达式只在「从源码仓库运行」时成立。装进 profile 后本包位于
+ * `<DSH_HOME>/profiles/<name>/node_modules/dsh-autoresearch-gates/lib`，
+ * 往上三级是 **profile 目录**，`packages/...` 根本不存在 —— 实测 14 个工具里
+ * 4 个（发布门那 4 个：qa-audit / qa-implementation-review / privacy-scan /
+ * verify-skill-archive）解析为 null，发布门工具集在装好的应用里完全不可用；
+ * 而仓库侧测试读的是源码副本，全绿也发现不了（这正是它潜伏至今的原因）。
+ *
+ * Node 的模块解析在两种布局下都正确：仓库里走工作区链接，profile 里走
+ * `node_modules/<pkg>`。解析不到返回 null，调用方如实报「不可用」。
+ */
+const requireFromHere = createRequire(import.meta.url)
+const packageDirCache = new Map()
+
+function packageDirOf(name) {
+  if (typeof name !== 'string' || name === '') return null
+  if (packageDirCache.has(name)) return packageDirCache.get(name)
+  let dir = null
+  if (name === OWN_PACKAGE) {
+    // 自身包不必经过解析器：本文件在 <pkg>/lib，上一级就是包根。
+    dir = join(HERE, '..')
+  } else {
+    try {
+      dir = dirname(requireFromHere.resolve(`${name}/package.json`))
+    } catch {
+      dir = null
+    }
+  }
+  packageDirCache.set(name, dir)
+  return dir
+}
 
 /** 三态退出码语义（SOP 统一约定）。 */
 export const EXIT_SEMANTICS = Object.freeze({
@@ -60,7 +99,29 @@ export const TOOL_REGISTRY = Object.freeze({
       1: '不可行（结构性），止损换题',
       2: '信息不足，需先做探针',
     },
-    note: '只有 --from-paper 与 --from-probe 都返回可行，才允许投入全 seed 正式协议。',
+    // 方向：默认 minimize（与脚本默认一致，保持既有题目的行为）。
+    // maximize 类指标（准确率/召回率/balanced accuracy 等越高越好）下 U 必然
+    // 大于 B，必须显式声明 direction='maximize'，否则脚本按 minimize 判读，
+    // 会把真实改善报成「U 必须严格小于 B」的假阳性。
+    parameters: {
+      direction: {
+        type: 'string',
+        enum: ['minimize', 'maximize'],
+        default: 'minimize',
+        description: '指标优化方向；maximize 类指标必须显式声明',
+      },
+      fromPaper: { type: 'boolean', description: '只用论文数字做纸面预解（最早期拦截）' },
+      fromProbe: { type: 'boolean', description: '用探针/实验数字判定' },
+      b: { type: 'array', items: { type: 'number' }, description: 'Baseline 指标（可多个 seed）' },
+      r: { type: 'array', items: { type: 'number' }, description: 'Reference 指标（可多个 seed）' },
+      u: { type: 'number', description: 'U：minimize 时是地板/下限，maximize 时是可达上限' },
+      uHint: { type: 'number', description: 'P0 阶段的 U 估计值（论文最优值或完美模型期望）' },
+      sigmaMult: { type: 'number', description: 'σ_B 倍数阈值' },
+    },
+    note: '只有 --from-paper 与 --from-probe 都返回可行，才允许投入全 seed 正式协议。'
+      + '方向取自题目元数据的**原始指标**层（anchors.json / comparison_summary.metric /'
+      + ' expert_annotation）；读不到时会告警并按 minimize 执行，'
+      + 'maximize 类指标须显式传 direction=maximize，否则 U>B 会被误判为结构性不可行。',
   },
   'harbor-task-contract': {
     id: 'harbor-task-contract',
@@ -124,6 +185,8 @@ export const TOOL_REGISTRY = Object.freeze({
     milestones: ['M2'],
     requires: ['python3'],
     exitSemantics: { 0: '纯咨询，无判定失败路径' },
+    // 纯咨询工具没有判定语义，退出 0 不能被当成 PASS。
+    exitZeroIsPass: false,
     note: '输出 3 个候选；候选扫描 ≤4 个且每个能说明对应哪种读法。',
   },
   'nop-preflight': {
@@ -164,6 +227,9 @@ export const TOOL_REGISTRY = Object.freeze({
     milestones: ['M5'],
     requires: ['python3'],
     exitSemantics: { 0: '收集完成（未完成初稿）', 1: '参数或输入错误', 2: '参数或输入错误' },
+    // 0 只是「收完了」，报告本身是未完成初稿；2 是调用参数错，不是证据不足。
+    exitZeroIsPass: false,
+    exitTwoIsInputError: true,
     note: '初次 inventory 与 report 是未完成初稿；不能把关键词命中当语义结论。',
   },
   'qa-implementation-review': {
@@ -179,6 +245,10 @@ export const TOOL_REGISTRY = Object.freeze({
       1: 'PASS 之外的终态',
       2: '参数错误',
     },
+    // 发布门证据的生产者：把退出 0 当 PASS，等于在「一次都没强制门禁」的运行上盖章。
+    // 结论只在报告里，因此必须交给读报告的一方判定。
+    exitZeroIsPass: false,
+    exitTwoIsInputError: true,
     note: '默认 --fail-on never；退出 0 不代表 PASS，必须读报告里的结论字段。' +
       '发布门路径需追加 --release-self-check 与 reviewer/session/clean-context 参数。',
   },
@@ -199,6 +269,8 @@ export const TOOL_REGISTRY = Object.freeze({
     milestones: ['M5'],
     requires: ['python3'],
     exitSemantics: { 0: '未发现隐私问题', 1: '发现隐私问题（fail-closed）', 2: '参数或路径错误' },
+    // 0 是真通过；2 是调用参数/路径错，不是证据不足。
+    exitTwoIsInputError: true,
     note: '退出码 1 是**真实发现**，不是工具故障。' +
       '注意它默认不读 .gitignore，因此在本仓直接跑会扫到 .dsh-home/ 与 node_modules/；' +
       '要判定「发布内容是否干净」，应对**发布产物或干净 clone** 跑，而不是对工作树跑。',
@@ -212,6 +284,7 @@ export const TOOL_REGISTRY = Object.freeze({
     milestones: ['M5'],
     requires: ['python3'],
     exitSemantics: { 0: '结构契约满足', 1: '结构不符合契约', 2: '参数错误' },
+    exitTwoIsInputError: true,
     note: '只校验结构契约，不校验内容正确性；内容正确性由双路质检负责。',
   },
 })
@@ -286,7 +359,114 @@ export const UPSTREAM_SOURCES = Object.freeze({
   },
 })
 
-/** 上游资产根目录：本包 assets/ 或指定包。 */
+/**
+ * 从题目元数据里读**原始指标**的优化方向。
+ *
+ * ## 为什么需要它（缺陷 3）
+ *
+ * 脚本默认 minimize，JS 门禁默认 maximize —— 两处默认**互相矛盾**。方向只能靠
+ * 调用方手工声明，不声明就按各自的默认走，同一道题在两条路径上可能得出
+ * 相反结论。而「改个默认值」不是解法：把任一侧默认改成另一侧，都会**静默
+ * 反转**所有依赖旧默认的既有题目。
+ *
+ * ## 这个矛盾的真实成因：两层口径被当成了同一层
+ *
+ * · `feasibility_gate.py` 处理**归一化之前的原始指标**（误差/损失，越小越好）
+ * · `gates.js` 的 `direction` 默认 `maximize`，描述的是**归一化后的 score**
+ *   （`score = (x−B)/(U−B)`，按定义越大越好）
+ *
+ * 两层之间差一次方向翻转。AutoRe0566 的元数据把这件事写得很清楚：
+ *
+ *     metric_direction = "minimize（原始指标）；[task].metric=score 归一化后 maximize"
+ *
+ * 所以**不能拿 `[task].metric_direction` 当脚本的方向**：它的 metric 是
+ * `"score"` 时，那一位按题目自己的注释是「固定 maximize」—— 是个恒真式，
+ * 不携带任何关于原始指标的信息。实测：AutoRe0566 的原始指标是 minimize
+ * 的 StatErr，而 `[task].metric_direction` 写着 maximize；直接采信会得到
+ * **正好相反**的判定。
+ *
+ * 因此本函数只认**描述原始指标**的来源：
+ *
+ *   1. `workspace/harbor_task/tests/hidden_assets/anchors.json` 的 `direction`
+ *      —— 它同时含 `metric`（原始指标名）与原始尺度的 `baseline_values`，
+ *      层次明确。AutoRe1841 实测：metric=balanced_accuracy、scale=0-100。
+ *   2. `optimization_evidence/comparison_summary.json` 的顶层 `direction`
+ *      —— **仅当它同时给出原始指标名**（`metric` 为非空字符串且不是 `"score"`）
+ *      时才采信；否则它描述的可能是归一化层。
+ *   3. `expert_evidence/expert_annotation.json` 的 `score_contract` / 顶层
+ *      `metric_direction` —— 同样要求指标名不是 `"score"`。
+ *
+ * **读不到就返回 null，由调用方决定怎么办** —— 本函数绝不猜、绝不返回默认值。
+ * 一个猜出来的方向会让「方向没声明」这件事实消失，而那正是缺陷 1 的成因。
+ *
+ * @returns {{direction: 'minimize'|'maximize', source: string}|null}
+ */
+export async function readTaskMetricDirection(taskRoot) {
+  if (typeof taskRoot !== 'string' || taskRoot.trim() === '') return null
+  const root = isAbsolute(taskRoot) ? taskRoot : resolve(process.cwd(), taskRoot)
+
+  /** 只接受两个字面量，其它一律视为未声明（含大小写变体与脏值）。 */
+  const accept = (value, source) => (
+    value === 'minimize' || value === 'maximize' ? { direction: value, source } : null
+  )
+
+  /**
+   * 归一化层标记：`metric` 是 `"score"` 时，同一份记录里的 `direction`
+   * 描述的是归一化分数（恒为 maximize），对本函数毫无信息量。
+   */
+  const isScoreLayer = (metricName) => (
+    typeof metricName === 'string' && metricName.trim().toLowerCase() === 'score'
+  )
+
+  // 来源一：anchors.json —— 层次最明确（自带 metric 名与原始尺度值）
+  try {
+    const raw = await readFile(
+      join(root, 'workspace', 'harbor_task', 'tests', 'hidden_assets', 'anchors.json'), 'utf8')
+    const parsed = JSON.parse(raw)
+    if (!isScoreLayer(parsed?.metric)) {
+      const hit = accept(parsed?.direction, 'workspace/harbor_task/tests/hidden_assets/anchors.json')
+      if (hit !== null) return hit
+    }
+  } catch { /* 不存在或不可解析：换下一个来源 */ }
+
+  // 来源二：comparison_summary.json 顶层 direction（要求 metric 不是 score）
+  try {
+    const raw = await readFile(join(root, 'optimization_evidence', 'comparison_summary.json'), 'utf8')
+    const parsed = JSON.parse(raw)
+    const metricName = typeof parsed?.metric === 'string' ? parsed.metric : parsed?.metric?.name
+    if (!isScoreLayer(metricName)) {
+      const hit = accept(parsed?.direction, 'optimization_evidence/comparison_summary.json')
+      if (hit !== null) return hit
+    }
+  } catch { /* 不存在或不可解析：换下一个来源 */ }
+
+  // 来源三：expert_annotation 的 metric_direction（同样要求指标名不是 score）
+  try {
+    const raw = await readFile(join(root, 'expert_evidence', 'expert_annotation.json'), 'utf8')
+    const parsed = JSON.parse(raw)
+    // 该字段可能是 "minimize（原始指标）；[task].metric=score 归一化后 maximize"
+    // 这种**带解释的长串** —— 取开头的第一个字面量，而不是要求整串相等。
+    const declared = parsed?.metric_direction ?? parsed?.score_contract?.direction
+    const metricName = parsed?.metric_name ?? parsed?.score_contract?.metric
+    if (!isScoreLayer(metricName) && typeof declared === 'string') {
+      const leading = /^\s*(minimize|maximize)/.exec(declared)
+      const hit = accept(leading?.[1], 'expert_evidence/expert_annotation.json metric_direction')
+      if (hit !== null) return hit
+    }
+  } catch { /* 不存在或不可解析：视为未声明 */ }
+
+  return null
+}
+
+/**
+ * 源码仓库根目录 —— **仅对源码检出（source checkout）有意义**。
+ *
+ * 只有漂移检查（lib/drift.js 的 buildBaseline/detectDrift/findCompiledArtifacts）
+ * 用它，而那些是 `npm run upstream:check` 这类开发期命令，本来就只在仓库里跑。
+ *
+ * 不要用它做运行期资产解析：装进 profile 后这个表达式得到的是 profile 目录，
+ * 见 packageDirOf() 的说明。运行期一律走 packageDirOf()。
+ */
 export const PROJECT_ROOT = join(HERE, '..', '..', '..')
 
 /**
@@ -315,8 +495,9 @@ export async function resolveUpstreamAsset(logical, sourceId) {
       if (typeof root !== 'string') continue
       // 优先在声明包内找，再在其 fallback 包内找。
       for (const pkg of [source.package, source.fallbackPackage]) {
-        if (typeof pkg !== 'string') continue
-        candidates.push(join(PROJECT_ROOT, 'packages', pkg, root, logical))
+        const pkgDir = packageDirOf(pkg)
+        if (pkgDir === null) continue
+        candidates.push(join(pkgDir, root, logical))
       }
     }
   }
@@ -453,6 +634,13 @@ export function buildArgv(toolId, args) {
       push('--r', args.r)
       push('--u', args.u)
       push('--u-hint', args.uHint)
+      // 方向只在显式声明 maximize 时透传。
+      //
+      // 刻意**不**把缺失回退成 maximize：feasibility_gate.py 的默认是 minimize，
+      // 未传参数时行为与历史一致。若这里猜测方向，既会让 minimize 题目被静默
+      // 反转，也会掩盖「调用方根本没声明方向」这一事实。
+      // 缺失、null、'minimize' 一律不传，argv 与改动前完全相同。
+      if (args.direction === 'maximize') push('--direction', 'maximize')
       push('--sigma-mult', args.sigmaMult)
       break
 
@@ -463,7 +651,15 @@ export function buildArgv(toolId, args) {
       break
 
     case 'dockerfile-preflight':
-      for (const file of args.dockerfiles ?? []) argv.push(file)
+      // 必须挡掉字符串：`for...of` 会把它按字符拆开，于是 Python 收到 15 个
+      // 单字符位置参数（'e','n','v','/','D'…），报出来的错完全指不到真因。
+      // 参数是 additionalProperties，字符串是合法输入，所以这里要显式拒绝。
+      if (typeof args.dockerfiles === 'string') {
+        throw new Error('dockerfiles 必须是数组（每个元素一个 Dockerfile 路径），收到的是字符串')
+      }
+      for (const file of args.dockerfiles ?? []) {
+        if (typeof file === 'string' && file !== '') argv.push(file)
+      }
       break
 
     case 'replay-contract-gate':
@@ -515,11 +711,49 @@ export function buildArgv(toolId, args) {
       push('--fail-on', args.failOn)
       break
 
+    // 这两个曾经漏了 case，而工具的 enum 是由 TOOL_REGISTRY 生成的 ——
+    // 模型被明确告知可以选它们，选了却必然抛「未知工具」。两个列表手工维护，
+    // 于是漂移。下面这组断言（以及 selftest 里的覆盖检查）就是为了不再漏。
+
+    case 'privacy-scan':
+      // 用法：privacy_scan.py [-h] [root] —— root 是位置参数。
+      push(args.source, true)
+      break
+
+    case 'verify-skill-archive':
+      // 用法：verify_skill_archive.py --expected-skill X archive —— 标志在前，归档在后。
+      // 位置参数优先取 source（本表其他工具的统一约定），兼容 archive 别名。
+      push('--expected-skill', args.expectedSkill)
+      push(args.source ?? args.archive, true)
+      break
+
     default:
       throw new Error(`未知工具：${toolId}`)
   }
 
   return argv.filter((value) => value !== undefined && value !== null)
+}
+
+/**
+ * 每个已登记工具都必须有 buildArgv 分支。
+ *
+ * 工具 id 的 enum 由 TOOL_REGISTRY 生成，而 argv 组装是另一个手工维护的 switch；
+ * 两处漂移时，模型会被提供一个**必然失败**的选项（`privacy-scan` 与
+ * `verify-skill-archive` 就这样失效过）。这个函数把漂移变成可测事实。
+ *
+ * @returns 缺分支的工具 id 列表；空列表 = 已对齐。
+ */
+export function findToolsWithoutArgvBranch() {
+  const missing = []
+  for (const toolId of Object.keys(TOOL_REGISTRY)) {
+    try {
+      // 空 args 只验证「有没有分支」；具体参数由调用方负责。
+      buildArgv(toolId, {})
+    } catch {
+      missing.push(toolId)
+    }
+  }
+  return missing
 }
 
 /**

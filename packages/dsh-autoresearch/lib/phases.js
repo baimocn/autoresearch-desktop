@@ -80,7 +80,10 @@ export const PHASES = Object.freeze([
       { path: 'workspace/harbor_task/environment/Dockerfile', kind: 'file', required: true, note: 'context = environment/' },
       { path: 'workspace/harbor_task/environment/starter', kind: 'dir', required: true, note: '起始实现；构建时初始化 starter 与 solution' },
       { path: 'workspace/harbor_task/environment/public_eval', kind: 'dir', required: true, note: '公开 Dev 评分入口，Agent 可见可调用' },
-      { path: 'workspace/harbor_task/tests/Dockerfile', kind: 'file', required: true, note: 'context = tests/，独立 Verifier 镜像' },
+      // 非必需：教程 v0.3.8（L169 / L512）允许复用 Solver 镜像 —— 此时 tests/ 由平台
+      // 上传到独立 Verifier sandbox，不需要 tests/Dockerfile。列为必需会把一种被认可
+      // 的交付方式判成缺件，而缺件会拦住阶段推进。
+      { path: 'workspace/harbor_task/tests/Dockerfile', kind: 'file', required: false, note: 'context = tests/，独立 Verifier 镜像；复用 Solver 镜像时可省略' },
       { path: 'workspace/harbor_task/tests/test.sh', kind: 'file', required: true, note: '正式评分入口，写 reward.txt 或 reward.json' },
       { path: 'workspace/harbor_task/tests/grader.py', kind: 'file', required: true, note: '可信正式评分实现' },
       { path: 'workspace/reference', kind: 'dir', required: true, note: '专家侧参考解，Agent 不可见' },
@@ -131,7 +134,11 @@ export const PHASES = Object.freeze([
       { path: 'optimization_evidence/baseline_runs', kind: 'dir', required: true, note: '逐 seed：result.json / run.log / model（训练型）' },
       { path: 'optimization_evidence/reference_runs', kind: 'dir', required: true, note: '与 Baseline 同 seed 一一配对' },
       { path: 'optimization_evidence/comparison_summary.json', kind: 'json', required: true, note: '3σ/5σ 判定与 validity 块' },
-      { path: 'expert_evidence/nop_selfcheck', kind: 'dir', required: true, note: '同一次 NOP Trial 的 config/result/reward/日志' },
+      // 非必需：教程 v0.3.8 L29 只要求「把同一次 Trial 的 config.json、result.json、
+      // reward.txt/json 与运行日志**放入 expert_evidence/**」，**未规定子目录名**。
+      // 这里保留该路径作为推荐位置（便于查找），但不再当作必需项 ——
+      // 固定目录名会把一种约定变成缺件。
+      { path: 'expert_evidence/nop_selfcheck', kind: 'dir', required: false, note: '推荐的 NOP 证据位置；四类证据放在 expert_evidence/ 下任意位置亦可' },
     ],
     exitCriteria: [
       '三类交付均完整且职责不重复',

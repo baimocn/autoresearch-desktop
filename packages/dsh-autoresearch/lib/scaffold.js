@@ -86,6 +86,9 @@ name = "${name}"
 description = "${description}"
 authors = [{ name = "TODO" }]
 keywords = ["TODO"]
+# 单轮出分预算（秒）。教程 v0.3.8 L268：完整单轮出分须 ≤7200s（2 小时），
+# 覆盖协议要求的训练、重载与评分。无法满足时须记录原因与判据并提交平台复核。
+time_limit_seconds = 7200
 
 [metadata]
 difficulty = "TODO"
@@ -100,14 +103,19 @@ languages = ["python"]
 
 [agent]
 timeout_sec = 43200             # 示例 12h；须容纳有效迭代要求及开销
+# network_mode 的位置由 Harbor 契约决定：权威只读 [agent] 与 [verifier]
+# （见 SOP references/field-lessons.md 与 harbor_task_contract.py 的 static_checks）。
+# 写在 [environment] / [verifier.environment] 下**不生效** —— 本模板早期就写错了位置，
+# 生成的 task.toml 看似配了网络模式，实际 Harbor 根本不读。
+network_mode = "no-network"
 
 [verifier]
 timeout_sec = 3600
 environment_mode = "separate"   # 必须显式声明
+network_mode = "no-network"
 user = "root"
 
 [verifier.environment]
-network_mode = "no-network"
 build_timeout_sec = 3600
 cpus = 8
 memory_mb = 32768
@@ -116,12 +124,14 @@ gpus = 0
 mcp_servers = []
 
 [environment]
-network_mode = "no-network"
 build_timeout_sec = 3600        # 默认 600s 装不下含 torch 的镜像
 cpus = 16
 memory_mb = 65536
 storage_mb = 102400
 gpus = 1
+# GPU 卡型：教程 v0.3.8 L266 要求 GPU 题仅用 H20/L20；CPU 题应把 gpus 设为 0
+# 并**删除本行**（不为适配模板增加 GPU）。
+gpu_types = ["H20"]
 mcp_servers = []
 `
 }
@@ -323,6 +333,10 @@ const RUN_SUMMARY_TEMPLATE = `{
   "task_id": "TODO",
   "status": "pilot_required",
   "image": "TODO",
+  "task_binding": {
+    "hash_profile": "harbor-task-inputs-v1",
+    "task_content_sha256": null
+  },
   "agent_execution": [
     {
       "runtime": "Codex",

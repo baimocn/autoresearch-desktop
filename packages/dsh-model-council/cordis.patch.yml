@@ -1,0 +1,11 @@
+# 模型议会 —— 独立工作台插件。
+#
+# 与 AutoResearch 工作台（autoresearch-ui）完全独立：独立面板、独立路由前缀
+# （/api/model-council）、独立配置文件（$DSH_HOME/model-council.json）。
+# 它不读任务目录，也不参与任何门禁 —— 是决策辅助工具，不是流程的一环。
+#
+# dshHome 省略时按 DSH_HOME 环境变量解析（与桌面壳、安装器同一规则）。
+- insert:
+    - id: model-council
+      name: dsh-model-council
+      config: {}

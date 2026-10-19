@@ -30,10 +30,13 @@ function record(name, ok, detail) {
 async function makeTaskTree({ withLeak, withDind }) {
   const taskRoot = await mkdtemp(join(tmpdir(), 'ars-wiring-'))
   const harbor = join(taskRoot, 'workspace', 'harbor_task')
-  const reference = join(taskRoot, 'workspace', 'reference')
   await mkdir(join(harbor, 'environment'), { recursive: true })
   await mkdir(join(harbor, 'tests'), { recursive: true })
-  await mkdir(reference, { recursive: true })
+  // 按生产路径的清单建目录 —— 这样「生产扫的目录」与「测试建的目录」不可能再脱钩。
+  for (const dir of RED_LINE_SOURCE_DIRS) await mkdir(join(taskRoot, dir), { recursive: true })
+  const reference = join(taskRoot, 'workspace', 'reference')
+  // starter 是解题者可见的那份代码，泄露的重灾区 —— 也正是曾经被漏扫的目录。
+  const starter = join(taskRoot, 'workspace', 'harbor_task', 'environment', 'starter')
 
   await writeFile(join(harbor, 'task.toml'), 'version = "1.0"\n', 'utf8')
   await writeFile(join(harbor, 'instruction.md'), '## Goal\n\n做点什么\n', 'utf8')
@@ -46,9 +49,12 @@ async function makeTaskTree({ withLeak, withDind }) {
     'FROM python:3.11\nCOPY . /tests\n', 'utf8')
 
   // reference/train.py：withLeak 时含泄露（红线 1 应命中）。
-  await writeFile(join(reference, 'train.py'), withLeak
-    ? 'test_labels = load("test_labels.npy")\nfor epoch in range(10):\n    loss = criterion(model(x), test_labels)\n    loss.backward()\n    optimizer.step()\n'
-    : 'for x, y in train_loader:\n    loss = criterion(model(x), y)\n    loss.backward()\n    optimizer.step()\n', 'utf8')
+  const leaky = 'test_labels = load("test_labels.npy")\nfor epoch in range(10):\n    loss = criterion(model(x), test_labels)\n    loss.backward()\n    optimizer.step()\n'
+  const clean = 'for x, y in train_loader:\n    loss = criterion(model(x), y)\n    loss.backward()\n    optimizer.step()\n'
+  await writeFile(join(reference, 'train.py'), withLeak ? leaky : clean, 'utf8')
+  // starter/train.py：解题者可见的那份。放在这里才能证明 starter 真被扫到 ——
+  // 曾经它不在扫描清单里，泄露写在这里也不会被红线 1 发现。
+  await writeFile(join(starter, 'train.py'), withLeak ? leaky : clean, 'utf8')
 
   return taskRoot
 }
@@ -59,6 +65,11 @@ console.log()
 // 直接复用工具层的自填逻辑：以 gateDockerPathContract 的输入契约为准，
 // 模拟 index.js 里那段读取代码的行为，确认它能读到文件。
 const { readFile } = await import('node:fs/promises')
+// 目录清单从插件导入，**不在这里复刻** —— 之前测试自己编了一套同样的错目录
+// （workspace/starter、workspace/harbor_task/reference 都不存在），
+// 于是生产路径扫空它也跟着绿，starter 里的泄露永远测不出来。
+const { RED_LINE_SOURCE_DIRS } = await import(
+  new URL('../packages/dsh-autoresearch/index.js', import.meta.url).href)
 
 for (const scenario of [
   { label: '含泄露与 DinD', withLeak: true, withDind: true, expectReject: true },
@@ -87,7 +98,7 @@ for (const scenario of [
     }
 
     const sourceFiles = []
-    for (const dir of ['workspace/reference', 'workspace/starter', 'workspace/harbor_task/reference']) {
+    for (const dir of RED_LINE_SOURCE_DIRS) {
       for (const rel of await listSourceFiles(dir)) {
         try {
           sourceFiles.push({ path: rel, text: await readFile(join(taskRoot, rel), 'utf8') })

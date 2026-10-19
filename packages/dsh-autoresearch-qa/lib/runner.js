@@ -308,7 +308,11 @@ export async function runLane(input) {
   const argv = [
     dshEntryPath,
     '--profile', profile,
-    '--patch', absolutePatch(basePatchPath),
+    // 桌面补丁层可选：装进 profile 后仓库的 build/ 不可达，调用方传 undefined。
+    // 不能无条件展开 —— absolutePatch(undefined) 会在 resolve 里抛 TypeError。
+    ...(typeof basePatchPath === 'string' && basePatchPath !== ''
+      ? ['--patch', absolutePatch(basePatchPath)]
+      : []),
     '--patch', absolutePatch(patchPath),
     '--json',
     prompt,

@@ -119,8 +119,17 @@ def main() -> int:
         ratio = gap / max(abs(args.community_baseline), 1e-9)
         # 论文增益的可信部分：从社区 baseline 起算
         if args.delta_percent is not None:
-            # 论文报告的绝对增益
-            abs_gain = args.reported_baseline * args.delta_percent / 100.0
+            # 论文报告的绝对增益（= 基线的 delta_percent%）。
+            #
+            # 必须取 |baseline|：基线为**负值**时（连续控制回合回报等，
+            # 越接近 0 越好）原式 `baseline * pct/100` 会得到**负的增益**，
+            # 于是 gain_from_community 恒 ≤ 0 ⇒ 该题**恒判 FAIL**，
+            # 与增益大小无关。实测 auto2604（B=−249.25, R=−231.55,
+            # 论文声称 7.1%）真实增益为 +17.70，原式算出 −17.70。
+            #
+            # 对**正基线**（误差、损失等）abs 不改变任何数值 —— 行为逐字节不变，
+            # 因此 auto1851 那类既有判例不受影响。
+            abs_gain = abs(args.reported_baseline) * args.delta_percent / 100.0
             gain_from_community = abs_gain - gap
             verdict = "FAIL" if gain_from_community <= 0 else "WARN"
             add("死因3 baseline 口径", verdict,

@@ -57,10 +57,13 @@ try {
   check('全部 AutoResearch 行激活（无 did not activate 警告）',
     !log.includes('did not activate'),
     log.includes('did not activate') ? log.split('\n').find((line) => line.includes('did not activate')) : '无警告')
-  for (const name of ['autoresearch', 'autoresearch-skills', 'autoresearch-gates', 'autoresearch-ui', 'autoresearch-qa', 'autoresearch-remote', 'autoresearch-api']) {
+  for (const name of ['autoresearch', 'autoresearch-skills', 'autoresearch-gates', 'autoresearch-ui', 'autoresearch-qa', 'autoresearch-remote', 'autoresearch-api', 'model-council']) {
     check(`  ${name} 未出现在失败列表`,
       !new RegExp(`${name}[^\\n]*failed to import`).test(log))
   }
+  // 注意：插件自己的 logger.info 不进 harness stdout（实测日志里没有这些行），
+  // 所以「apply 是否跑到底」不能靠日志断言 —— 改用配置路由的 mode.ready 回显，
+  // 见第 7 节。
 
   console.log('\n=== 2) HTTP 路由（带 token 换取 cookie）===')
   const cookieJar = new Map()
@@ -145,20 +148,54 @@ try {
   // 不能凭包名猜路径。
   const page = await fetch(url, { headers: { cookie: cookieHeader } })
   const pageHtml = await page.text()
-  const bundleMatch = /"url":"(plugins\/\?\?dsh-autoresearch-ui\/client\.js[^"]*)"/.exec(pageHtml)
-  check('启动图包含 AutoResearch 客户端插件', bundleMatch !== null,
-    bundleMatch === null ? '未在 __DSH_BOOT__ 中找到该条目' : bundleMatch[1])
-  if (bundleMatch !== null) {
+  for (const [label, pkg, marker] of [
+    ['AutoResearch 工作台', 'dsh-autoresearch-ui', 'autoresearch'],
+    ['模型议会（独立面板）', 'dsh-model-council', 'model-council'],
+  ]) {
+    const pattern = new RegExp(`"url":"(plugins/\\?\\?${pkg}/client\\.js[^"]*)"`)
+    const bundleMatch = pattern.exec(pageHtml)
+    check(`启动图包含${label}客户端插件`, bundleMatch !== null,
+      bundleMatch === null ? '未在 __DSH_BOOT__ 中找到该条目' : bundleMatch[1])
+    if (bundleMatch === null) continue
     const bundlePath = bundleMatch[1].replace(/&amp;/g, '&')
     const clientBundle = await fetch(new URL(bundlePath, url), { headers: { cookie: cookieHeader } })
-    check('客户端 bundle 可获取（200）', clientBundle.status === 200, `status=${clientBundle.status}`)
-    if (clientBundle.status === 200) {
-      const source = await clientBundle.text()
-      check('  bundle 含模块自注册与面板键',
-        source.includes('__ModuleLoader__.load') && source.includes('autoresearch'),
-        `${source.length} 字节`)
-    }
+    check(`  ${label} bundle 可获取（200）`, clientBundle.status === 200, `status=${clientBundle.status}`)
+    if (clientBundle.status !== 200) continue
+    const source = await clientBundle.text()
+    check(`  ${label} bundle 含模块自注册与面板键`,
+      source.includes('__ModuleLoader__.load') && source.includes(marker),
+      `${source.length} 字节`)
   }
+
+  console.log('\n=== 7) 模型议会（独立工作台）路由 ===')
+  const councilConfig = await api('/api/model-council/config')
+  check('GET /api/model-council/config 返回 200', councilConfig.status === 200, `status=${councilConfig.status}`)
+  check('  返回成员列表与三种身份分层',
+    Array.isArray(councilConfig.body?.participants) && councilConfig.body?.tiers?.length === 3,
+    `tiers=${(councilConfig.body?.tiers ?? []).map((t) => t.id).join('/')}`)
+  check('  返回支持的协议清单',
+    Array.isArray(councilConfig.body?.protocols) && councilConfig.body.protocols.includes('openai-completions'),
+    (councilConfig.body?.protocols ?? []).join('/'))
+  // mode.ready 只有 installCouncilMode 跑完才为 true —— 这是「apply() 跑到底」
+  // 的真实证据：只注册了路由、模式装配中途抛错的话它是 false。
+  check('  议会模式已就绪（apply 跑到底的证据）', councilConfig.body?.mode?.ready === true,
+    `ready=${councilConfig.body?.mode?.ready}`)
+  const councilCommands = (councilConfig.body?.mode?.commands ?? []).map((entry) => entry.name)
+  check('  回显三个模式命令',
+    ['council', 'council-strict', 'council-off'].every((name) => councilCommands.includes(name)),
+    councilCommands.join(' / '))
+  check('  给出凭据文档路径但不回显密钥',
+    typeof councilConfig.body?.credentialsPath === 'string'
+    && JSON.stringify(councilConfig.body).includes('apiKey') === false,
+    councilConfig.body?.credentialsPath)
+
+  const councilSessions = await api('/api/model-council/sessions')
+  check('GET /api/model-council/sessions 返回 200', councilSessions.status === 200, `status=${councilSessions.status}`)
+  check('  未建会话时如实返回空列表', Array.isArray(councilSessions.body?.sessions),
+    `sessions=${councilSessions.body?.sessions?.length ?? 'n/a'}`)
+
+  const councilMissing = await api('/api/model-council/session?id=does-not-exist')
+  check('  不存在的会话如实返回 404', councilMissing.status === 404, `status=${councilMissing.status}`)
 
   const failures = results.filter((entry) => !entry.ok)
   console.log(`\n集成验证：${results.length - failures.length} 通过，${failures.length} 失败，共 ${results.length} 项`)

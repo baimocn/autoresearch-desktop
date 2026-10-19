@@ -3,7 +3,7 @@
  * 覆盖教程与 SOP 的关键判据，避免「静态全绿、真机必挂」。
  */
 import { strict as assert } from 'node:assert'
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile, mkdir, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +21,10 @@ const tools = await load('dsh-autoresearch-gates/lib/tools.js')
 const qaRunner = await load('dsh-autoresearch-qa/lib/runner.js')
 const qaZip = await load('dsh-autoresearch-qa/lib/zip.js')
 const workflow = await load('dsh-autoresearch/lib/workflow.js')
+const sessionTasks = await load('dsh-autoresearch/lib/session-tasks.js')
+const redlines = await load('dsh-autoresearch/lib/redlines.js')
+const ui = await load('dsh-autoresearch-ui/index.js')
+const plugin = await load('dsh-autoresearch/index.js')
 
 let passed = 0
 let failed = 0
@@ -87,6 +91,87 @@ test('G-SELECT：llm-judge 指标判 UNKNOWN（U 不可构造）', () => {
   assert.ok(result.checks.some((item) => item.id === 'G0.6' && item.status === 'UNKNOWN'))
 })
 
+// ── G0.10：裸百分比对负值有界指标失真（缺陷报告 2026-10-16）─────────────────
+//
+// auto2604 实战：主指标为连续控制回合回报（负值有界，越接近 0 越好）。
+//   B=−249.25  R=−231.55  U=−219.70
+//   Δ=+17.70（7.10% of |B|）、R_norm=0.599 ∈ [0.15,0.8]、Δ=26.7σ_B
+// 旧实现只看裸百分比 7.1% < 10 ⇒ UNKNOWN ⇒ 永久阻塞 intake。
+// 但 R_norm 与 3σ 判据（协议自身口径）都判「空间充足」。
+
+const auto2604Payload = (extra = {}) => ({
+  title: 'Time-Aware World Model', repo: 'anh-nn01/Time-Aware-World-Model',
+  license: 'MIT', optimizationSurface: { methodLevel: true }, duplicateChecked: true,
+  metricType: 'physical', benchmarkCount: 12, ablationCount: 1,
+  communityBaseline: -249.25, reportedBaseline: -249.252, deltaPercent: 7.1,
+  ...extra,
+})
+
+test('G0.10：负值有界指标提供 B/R/U 时按归一化口径判 PASS（不再误判）', () => {
+  const result = gates.gateSelection(auto2604Payload({
+    baseline: -249.25, reference: -231.55, upper: -219.70,
+    direction: 'maximize', sigmaMultiple: 26.7,
+  }))
+  const g010 = result.checks.find((item) => item.id === 'G0.10')
+  assert.equal(g010.status, 'PASS', `G0.10 应为 PASS，实际 ${g010.status}：${g010.detail}`)
+  assert.ok(/R_norm=0\.5990/.test(g010.detail), `应报出 R_norm=0.5990，实际：${g010.detail}`)
+  assert.equal(result.verdict, 'RECOMMEND', '该题三门全过，不应被 G0.10 阻塞')
+})
+
+test('G0.10：平移不变性 —— 优化空间未变则结论必须相同', () => {
+  // 对同一任务做纯平移 B→B+C（与优化空间无关的重参数化）：
+  // Δ 与 U−B 均不变 ⇒ R_norm 严格不变。旧实现因分母是 |B|，
+  // 结论会随 C 从 UNKNOWN 翻转为 PASS —— 本次修复必须消除这个翻转。
+  const verdicts = [0, 50, 100, 150, 200].map((C) => gates.gateSelection(auto2604Payload({
+    baseline: -249.25 + C, reference: -231.55 + C, upper: -219.70 + C,
+    direction: 'maximize', sigmaMultiple: 26.7,
+  })).checks.find((item) => item.id === 'G0.10').status)
+  assert.equal(new Set(verdicts).size, 1,
+    `平移后 G0.10 结论应恒一致，实际：${JSON.stringify(verdicts)}`)
+  assert.equal(verdicts[0], 'PASS')
+})
+
+test('G0.10：方向配错（U 未越过 B）不在此处重复报错', () => {
+  // 该矛盾由 G-FEASIBILITY 的 G1.5 负责；本节判 FAIL 会重复归因。
+  const result = gates.gateSelection(auto2604Payload({
+    baseline: -249.25, reference: -231.55, upper: -260.0, direction: 'maximize',
+  }))
+  const g010 = result.checks.find((item) => item.id === 'G0.10')
+  assert.notEqual(g010.status, 'FAIL', 'G0.10 不应因方向矛盾判 FAIL（那是 G1.5 的职责）')
+})
+
+test('G0.10：确无 B/R/U 时回退百分比，且如实标注为粗判', () => {
+  const low = gates.gateSelection(auto2604Payload()).checks.find((item) => item.id === 'G0.10')
+  assert.equal(low.status, 'UNKNOWN')
+  assert.ok(/粗判/.test(low.detail), `回退口径必须标注为粗判，实际：${low.detail}`)
+  assert.ok(/负值有界/.test(low.fix ?? ''), '修复建议应点明负值有界指标的风险')
+
+  // ≥10% 的回退也不得宣称「空间充足」——只说明是粗判通过。
+  const high = gates.gateSelection(auto2604Payload({ deltaPercent: 34 }))
+    .checks.find((item) => item.id === 'G0.10')
+  assert.equal(high.status, 'PASS')
+  assert.ok(/粗判/.test(high.detail), `回退口径的 PASS 也应标注粗判，实际：${high.detail}`)
+})
+
+test('G0.10：仅提供 sigmaMultiple 时按 σ 判据（量级无关）', () => {
+  const pass = gates.gateSelection(auto2604Payload({ sigmaMultiple: 26.7 }))
+    .checks.find((item) => item.id === 'G0.10')
+  assert.equal(pass.status, 'PASS')
+  const fail = gates.gateSelection(auto2604Payload({ sigmaMultiple: 1.2 }))
+    .checks.find((item) => item.id === 'G0.10')
+  assert.equal(fail.status, 'UNKNOWN')
+})
+
+test('G0.10：既有正基线行为不变（δ=34% ≥ 10% 仍 PASS）', () => {
+  const result = gates.gateSelection({
+    title: 'T', repo: 'owner/name', license: 'MIT',
+    optimizationSurface: { methodLevel: true }, duplicateChecked: true,
+    communityBaseline: 60, reportedBaseline: 58, deltaPercent: 34,
+    metricType: 'physical', benchmarkCount: 3, ablationCount: 2,
+  })
+  assert.equal(result.checks.find((item) => item.id === 'G0.10').status, 'PASS')
+})
+
 test('G-FEASIBILITY：R_norm 出界判 REJECT', () => {
   const result = gates.gateFeasibility({
     baselineValues: [1.0, 1.01, 0.99], referenceValues: [1.005, 1.006, 1.004],
@@ -148,54 +233,185 @@ test('G-FEASIBILITY：缺实测值判 NEEDS_EVIDENCE', () => {
   assert.equal(result.verdict, 'NEEDS_EVIDENCE')
 })
 
+// ── G-CONTRACT：与 Python 权威（harbor_task_contract.py static_checks）对齐 ──
+//
+// 这几项之前全用 `environment.network_mode` —— 那正是缺陷本身：权威读的是
+// `[agent]` 与 `[verifier]`，JS 却读 `environment.*`，于是常见误写
+// `[agent] network_mode = "none"` 在 JS 侧判 RECOMMEND 而 Harbor 原生会拒。
+// 测试跟着实现一起写错，所以 22 项全绿也发现不了。现在按权威的字段与严重度写。
+
+/** 合法 task.toml 的形状（权威四类必查全过）。 */
+const validContract = () => ({
+  schema_version: '1.3',
+  artifacts: ['/workspace/solution'],
+  // time_limit_seconds 与资源字段是 QA15 的判据（教程 v0.3.8 L266）：
+  // 完整单轮 ≤7200s、≤8 张 H20/L20、≤64 核。
+  task: { name: 'group/name', time_limit_seconds: 7200 },
+  agent: { network_mode: 'no-network' },
+  environment: { build_timeout_sec: 3600, cpus: 16, gpus: 1, gpu_types: ['H20'] },
+  verifier: { network_mode: 'no-network', environment_mode: 'separate' },
+})
+
 test('G-CONTRACT：合法配置通过', () => {
-  const result = gates.gateTaskContract({
-    schema_version: '1.3', artifacts: ['/workspace/solution'],
-    task: { name: 'group/name' },
-    environment: { network_mode: 'no-network', build_timeout_sec: 3600 },
-    verifier: { environment_mode: 'separate', environment: { network_mode: 'no-network' } },
-  })
+  const result = gates.gateTaskContract(validContract())
   assert.equal(result.verdict, 'RECOMMEND', JSON.stringify(result.checks.filter((c) => c.status !== 'PASS')))
 })
 
-test('G-CONTRACT：network_mode=none 判 FAIL（非原生接受值）', () => {
-  const result = gates.gateTaskContract({
-    schema_version: '1.3', artifacts: ['/workspace/solution'],
-    task: { name: 'group/name' },
-    environment: { network_mode: 'none', build_timeout_sec: 3600 },
-    verifier: { environment_mode: 'separate', environment: { network_mode: 'no-network' } },
-  })
-  assert.equal(result.verdict, 'REJECT')
+test('G-CONTRACT：[agent].network_mode=none 判 FAIL（权威所在段落）', () => {
+  // 这是最危险的漏网形态：Harbor 原生拒绝，而旧 JS 因为读错段落判 RECOMMEND。
+  const cfg = validContract()
+  cfg.agent.network_mode = 'none'
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'REJECT')
 })
 
-test('G-CONTRACT：environment_mode 非 separate 判 FAIL', () => {
-  const result = gates.gateTaskContract({
-    schema_version: '1.3', artifacts: ['/workspace/solution'],
-    task: { name: 'group/name' },
-    environment: { network_mode: 'no-network', build_timeout_sec: 3600 },
-    verifier: { environment_mode: 'shared', environment: { network_mode: 'no-network' } },
-  })
-  assert.equal(result.verdict, 'REJECT')
+test('G-CONTRACT：[verifier].network_mode 非法判 FAIL', () => {
+  const cfg = validContract()
+  cfg.verifier.network_mode = 'isolated'
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'REJECT')
 })
 
-test('G-CONTRACT：build_timeout 低于 3600 判 FAIL', () => {
-  const result = gates.gateTaskContract({
-    schema_version: '1.3', artifacts: ['/workspace/solution'],
-    task: { name: 'group/name' },
-    environment: { network_mode: 'no-network', build_timeout_sec: 600 },
-    verifier: { environment_mode: 'separate', environment: { network_mode: 'no-network' } },
-  })
-  assert.equal(result.verdict, 'REJECT')
+test('G-CONTRACT：network_mode 缺省不算失败（权威直接 continue）', () => {
+  const cfg = validContract()
+  delete cfg.agent.network_mode
+  delete cfg.verifier.network_mode
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'RECOMMEND')
 })
 
-test('G-CONTRACT：artifacts 缺 /workspace/solution 判 FAIL', () => {
-  const result = gates.gateTaskContract({
-    schema_version: '1.3', artifacts: ['/workspace'],
-    task: { name: 'group/name' },
-    environment: { network_mode: 'no-network', build_timeout_sec: 3600 },
-    verifier: { environment_mode: 'separate', environment: { network_mode: 'no-network' } },
+test('G-CONTRACT：environment.network_mode 写了也不生效，且不得判 FAIL', () => {
+  // 权威不读这个位置。如实报 UNKNOWN（说明写了没用），而不是判失败 ——
+  // 否则用户会以为配置被拒，实际是位置不对。
+  const cfg = validContract()
+  cfg.environment.network_mode = 'no-network'
+  const result = gates.gateTaskContract(cfg)
+  // 信息性提示不得阻塞：UNKNOWN 与 FAIL 在 advanceState 眼里一样拦，
+  // 而"写在 Harbor 不读的位置"只是无效、无害。信息保留在 detail 里。
+  assert.equal(result.verdict, 'RECOMMEND')
+  const info = result.checks.find((c) => c.id === 'G2.2:environment')
+  assert.equal(info.status, 'PASS')
+  assert.ok(/不在\*\*Harbor 契约的检查范围|不在.*Harbor/.test(info.detail), info.detail)
+})
+
+test('G-CONTRACT：environment_mode 非 separate 是 WARN 不是 FAIL（权威如此）', () => {
+  const cfg = validContract()
+  cfg.verifier.environment_mode = 'shared'
+  // 权威 static_checks 把它放进 warn，JS 不得升级为硬失败。
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'NEEDS_EVIDENCE')
+})
+
+test('G-CONTRACT：environment_mode 缺失/非法仍是 FAIL', () => {
+  const missing = validContract()
+  delete missing.verifier.environment_mode
+  assert.equal(gates.gateTaskContract(missing).verdict, 'REJECT')
+  const illegal = validContract()
+  illegal.verifier.environment_mode = 'isolated'
+  assert.equal(gates.gateTaskContract(illegal).verdict, 'REJECT')
+})
+
+test('G-CONTRACT：build_timeout 低于 3600 是 WARN 不是 FAIL', () => {
+  const cfg = validContract()
+  cfg.environment.build_timeout_sec = 600
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'NEEDS_EVIDENCE')
+})
+
+test('G-CONTRACT：build_timeout 非数值仍是 FAIL', () => {
+  const cfg = validContract()
+  cfg.environment.build_timeout_sec = 'soon'
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'REJECT')
+})
+
+test('G-CONTRACT：artifacts 缺 /workspace/solution 是 WARN 不是 FAIL', () => {
+  const cfg = validContract()
+  cfg.artifacts = ['/workspace']
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'NEEDS_EVIDENCE')
+})
+
+test('G-CONTRACT：[task].name 缺失是 FAIL', () => {
+  const cfg = validContract()
+  delete cfg.task.name
+  assert.equal(gates.gateTaskContract(cfg).verdict, 'REJECT')
+})
+
+test('G-DOCKERFILE：八章节标题允许带编号前缀', () => {
+  // 真实题面普遍写成 `## 1. Goal`，早期只匹配 `^## Goal$`，于是把一份
+  // 八章节齐全的 instruction.md 判成「缺少全部八章节」（实测 AutoRe0566）。
+  const sections = ['Goal', 'Task Setting', 'Objective and Metrics', 'Allowed Scope',
+    'Hard Boundaries', 'Submission Instructions', 'Workflow & Iteration', 'Completion Criteria']
+  for (const [label, heading] of [
+    ['裸标题（脚手架模板）', (s) => `## ${s}`],
+    ['数字加点', (s) => `## ${sections.indexOf(s) + 1}. ${s}`],
+    ['中文顿号', (s) => `## ${sections.indexOf(s) + 1}、${s}`],
+  ]) {
+    const md = sections.map((s, i) => heading(s, i)).join('\n\n')
+    const result = gates.gateDockerPathContract({
+      environmentDockerfile: 'FROM x\nCOPY starter/ /s/\n',
+      testsDockerfile: 'FROM x\nCOPY . /t\n',
+      instructionMd: md,
+    })
+    const g36 = result.checks.find((c) => c.id === 'G3.6')
+    assert.equal(g36.status, 'PASS', `${label} 应通过，实际：${g36.detail}`)
+  }
+  // 反向：真缺章节仍须 FAIL（放宽不能放到形同虚设）。
+  const partial = gates.gateDockerPathContract({
+    environmentDockerfile: 'FROM x\nCOPY starter/ /s/\n',
+    testsDockerfile: 'FROM x\nCOPY . /t\n',
+    instructionMd: '## 1. Goal\n\n## 2. Task Setting\n',
   })
-  assert.equal(result.verdict, 'REJECT')
+  assert.equal(partial.checks.find((c) => c.id === 'G3.6').status, 'FAIL')
+})
+
+test('红线 1：torch.no_grad 下的评测循环不是泄露', () => {
+  // `with torch.no_grad(): for x, y in test_loader:` 是教科书式评测代码。
+  // 早期 evalCtxRe 不含 no_grad，且只看本行不看窗口，于是把指标累加器初始化
+  // （`test_l2 = 0`）判成「训练路径读评测标签」—— 合法的参考实现被硬拒。
+  const evalLoop = [
+    'optimizer.step()',
+    '',
+    'test_l2 = 0',
+    'with torch.no_grad():',
+    '    for x, y in test_loader:',
+    '        test_l2 += lploss(model(x), y).item()',
+  ].join('\n')
+  const findings = redlines.scanDataLeakage(evalLoop, 'eval.py')
+  assert.equal(findings.filter((f) => f.level === 'leak').length, 0, '评测循环不应判泄露')
+  assert.equal(findings.filter((f) => f.level === 'suspect').length, 0, '评测循环不应留待确认噪音')
+})
+
+test('红线 1：真泄露仍须被抓到（放宽后不能失效）', () => {
+  // 消融：修复误报的同时，两种真实泄露形态必须仍然判 leak。
+  const viaGroundTruth = [
+    'gt = load_ground_truth()',
+    'for epoch in range(10):',
+    '    loss = criterion(model(x), gt)',
+    '    loss.backward()',
+    '    optimizer.step()',
+  ].join('\n')
+  const viaUnpack = [
+    'for epoch in range(10):',
+    '    for x, y in val_loader:',
+    '        loss = criterion(model(x), y)',
+    '        loss.backward()',
+    '        optimizer.step()',
+  ].join('\n')
+  for (const [label, text] of [['load_ground_truth', viaGroundTruth], ['训练里遍历 val_loader', viaUnpack]]) {
+    const leaks = redlines.scanDataLeakage(text, 'train.py').filter((f) => f.level === 'leak')
+    assert.ok(leaks.length > 0, `${label} 应判泄露，实际 0 处`)
+  }
+})
+
+test('红线 1：suspect 不得靠兜底分支产出噪音', () => {
+  // 训练与测试的 DataLoader 天然相邻，窗口必然同时覆盖两者。
+  // 早期最后一级是 `else level = 'suspect'` 兜底，于是形状断言、计时、print
+  // 这些完全无关的行全被标成待确认 —— G3.9 的 UNKNOWN 与 FAIL 一样拦阶段推进，
+  // 噪音于是变成硬阻塞（实测 21 个源文件产出 20 条）。
+  const adjacent = [
+    'train_loader = DataLoader(TensorDataset(train_a, train_u))',
+    'test_loader = DataLoader(TensorDataset(test_a, test_u))',
+    't2 = default_timer()',
+    'print("done", t2)',
+  ].join('\n')
+  const findings = redlines.scanDataLeakage(adjacent, 'x.py')
+  assert.equal(findings.filter((f) => f.level === 'suspect').length, 0,
+    `无关行不应产出 suspect：${JSON.stringify(findings.filter((f) => f.level === 'suspect'))}`)
 })
 
 test('G-DOCKERFILE：越界 COPY 与泄露私有材料判 FAIL', () => {
@@ -206,6 +422,35 @@ test('G-DOCKERFILE：越界 COPY 与泄露私有材料判 FAIL', () => {
   assert.equal(result.verdict, 'REJECT')
   assert.ok(result.checks.some((item) => item.id === 'G3.1' && item.status === 'FAIL'))
   assert.ok(result.checks.some((item) => item.id === 'G3.2' && item.status === 'FAIL'))
+})
+
+test('G-DOCKERFILE：多阶段 COPY --from 的绝对路径不得判越界', () => {
+  // 多阶段构建里 `COPY --from=builder /out/app /app` 的源按构造就是绝对路径，
+  // 它来自另一个构建阶段而不是宿主上下文。旧实现只看 source 不看 flags，
+  // 把标准多阶段 Dockerfile 一律判硬失败。
+  const result = gates.gateDockerPathContract({
+    environmentDockerfile: 'FROM a AS builder\nRUN make\nFROM b\nCOPY --from=builder /out/app /app\nCOPY starter/ /s/\n',
+    testsDockerfile: 'FROM x\nCOPY . /tests\n',
+  })
+  const g31 = result.checks.find((item) => item.id === 'G3.1')
+  assert.equal(g31.status, 'PASS', `--from 绝对路径应通过，实际：${g31.detail}`)
+})
+
+test('G-DOCKERFILE：--from 之外的绝对路径仍判越界', () => {
+  // 修复不能顺手放过真正的逃逸：没有 --from 时绝对路径依然是宿主路径逃逸。
+  const result = gates.gateDockerPathContract({
+    environmentDockerfile: 'FROM x\nCOPY /etc/passwd /app/\n',
+    testsDockerfile: 'FROM x\nCOPY . /tests\n',
+  })
+  assert.ok(result.checks.some((item) => item.id === 'G3.1' && item.status === 'FAIL'))
+})
+
+test('isEscapingEntry：--from 阶段内仍禁止 .. 逃逸', () => {
+  // 阶段来源不等于可以乱走：`COPY --from=b /a/../../x /y` 仍应判越界。
+  assert.equal(gates.isEscapingEntry({ source: '/a/../../x', flags: ['--from=b'] }), true)
+  assert.equal(gates.isEscapingEntry({ source: '/out/app', flags: ['--from=builder'] }), false)
+  // 不带 flags 时退回原语义（绝对路径越界）。
+  assert.equal(gates.isEscapingEntry({ source: '/out/app', flags: [] }), true)
 })
 
 test('G-DOCKERFILE：instruction.md 缺章节判 FAIL', () => {
@@ -304,9 +549,12 @@ test('G-TRAJECTORY：7 小时例外证据齐备时通过', () => {
     codexTrajectory: { rounds }, seedTrajectory: { rounds },
     runSummary: {
       agent_execution: [
-        { runtime: 'Codex', model: 'GPT-5.6 Sol', duration_hours: 7.5 },
-        { runtime: 'Codex', model: 'Seed 2.1 Turbo', duration_hours: 7.2 },
+        // effective_rounds / typical_round_minutes 是 0.3.8 例外条件 5 的量化要求
+        { runtime: 'Codex', model: 'GPT-5.6 Sol', duration_hours: 7.5, effective_rounds: 4, typical_round_minutes: 12 },
+        { runtime: 'Codex', model: 'Seed 2.1 Turbo', duration_hours: 7.2, effective_rounds: 3, typical_round_minutes: 15 },
       ],
+      // 例外条件 4：best_method 已在干净快照重跑出分
+      validation: { best_method_rerun_passed: true },
       fast_iteration_exception: {
         used: true, non_training: true, short_iterations: true, rollable_proved: true,
         evidence: '本题不涉及训练，典型单轮 8 分钟；两条轨迹各完成 ≥3 轮方法闭环。',
@@ -474,11 +722,29 @@ test('G-PACK-VERIFY：缺文件与缓存残留判 FAIL', () => {
   assert.ok(result.checks.some((item) => item.id === 'G14.4' && item.status === 'FAIL'))
 })
 
-test('G-PACK-VERIFY：一致且无残留通过', () => {
+/** QA15 已并入发布期打包门，凡跑 G-PACK-VERIFY 的用例都要带 task.toml。 */
+const QA15_TOML = { task: { time_limit_seconds: 7200 }, environment: { cpus: 16, gpus: 1, gpu_types: ['H20'] } }
+
+test('G-PACK-VERIFY：哈希一致且交付期事实齐备时通过', () => {
+  // 只给哈希不够：0.3.8 的打包门还要核对自验声明、best_method 内容、Git 状态、
+  // 以及"不得夹带审核结论"。缺这些事实时门禁给 UNKNOWN（无法认证），不是假通过。
+  const result = gates.gatePackVerify({
+    sourceHashes: { 'a.py': 'x' }, packedHashes: { 'a.py': 'x' }, forbiddenEntries: [],
+    runSummary: { validation: { baseline_passed: true, reference_passed: true, optimization_evidence_complete: true, best_method_rerun_passed: true } },
+    bestMethodFiles: ['method.py'],
+    gitState: { isRepo: false },
+    annotation: { task_id: 'x' },
+    expertDoc: '只陈述专家自验事实。',
+    taskToml: { task: { time_limit_seconds: 7200 }, environment: { cpus: 16, gpus: 1, gpu_types: ['H20'] } },
+  })
+  assert.equal(result.verdict, 'RECOMMEND', JSON.stringify(result.checks.filter((c) => c.status !== 'PASS')))
+})
+
+test('G-PACK-VERIFY：只给哈希时判需补证据（不得假通过）', () => {
   const result = gates.gatePackVerify({
     sourceHashes: { 'a.py': 'x' }, packedHashes: { 'a.py': 'x' }, forbiddenEntries: [],
   })
-  assert.equal(result.verdict, 'RECOMMEND')
+  assert.equal(result.verdict, 'NEEDS_EVIDENCE')
 })
 
 test('verdictOf：FAIL 优先于 UNKNOWN（不做总分补偿）', () => {
@@ -750,6 +1016,55 @@ test('工具登记表全部指向真实脚本', async () => {
   const { available, missing } = await tools.listTools()
   assert.equal(missing.length, 0, `缺失脚本：${missing.map((item) => item.script).join(', ')}`)
   assert.ok(available.length >= 11, `可用工具 ${available.length} 个`)
+})
+
+test('每个登记工具都有 buildArgv 分支', async () => {
+  // 工具 id 的 enum 由 TOOL_REGISTRY 生成，argv 组装却是另一个手工 switch。
+  // 漂移时模型会被提供一个必然失败的选项 —— privacy-scan 与 verify-skill-archive
+  // 就这样失效过（选中即抛「未知工具」）。
+  const missing = tools.findToolsWithoutArgvBranch()
+  assert.equal(missing.length, 0, `缺 buildArgv 分支：${missing.join(', ')}`)
+})
+
+test('dockerfiles 传字符串时必须报错而不是按字符拆开', () => {
+  // additionalProperties 让字符串成为合法输入；不挡掉的话 for...of 会拆成单字符，
+  // Python 收到 15 个位置参数，报错完全指不到真因。
+  let threw = false
+  try {
+    tools.buildArgv('dockerfile-preflight', { dockerfiles: 'env/Dockerfile' })
+  } catch (error) {
+    threw = /必须是数组/.test(error.message)
+  }
+  assert.ok(threw, 'dockerfiles 为字符串时应抛「必须是数组」')
+  const ok = tools.buildArgv('dockerfile-preflight', { dockerfiles: ['a/Dockerfile', 'b/Dockerfile'] })
+  assert.deepEqual(ok, ['a/Dockerfile', 'b/Dockerfile'])
+})
+
+test('退出码 0 不总是 PASS —— 由工具自己声明', async () => {
+  const { interpretExit } = await import(
+    new URL('../packages/dsh-autoresearch-gates/index.js', import.meta.url).href)
+  // 发布门证据的生产者：默认 --fail-on never，退出 0 只表示「跑完了」。
+  // 把它当 PASS，等于在一次都没强制门禁的运行上盖通过章。
+  for (const id of ['qa-implementation-review', 'qa-audit', 'numeric-backsolve']) {
+    const verdict = interpretExit(tools.TOOL_REGISTRY[id], 0)
+    assert.notEqual(verdict.verdict, 'PASS',
+      `${id} 声明了 exitZeroIsPass:false，退出 0 不得判 PASS`)
+    assert.equal(verdict.verdict, 'NEEDS_EVIDENCE', `${id} 退出 0 应为 NEEDS_EVIDENCE`)
+  }
+  // 真通过的工具不受影响。
+  for (const id of ['milestone-gate', 'privacy-scan']) {
+    assert.equal(interpretExit(tools.TOOL_REGISTRY[id], 0).verdict, 'PASS', `${id} 退出 0 应为 PASS`)
+  }
+})
+
+test('退出码 2 区分「参数错误」与「需人工确认」', async () => {
+  const { interpretExit } = await import(
+    new URL('../packages/dsh-autoresearch-gates/index.js', import.meta.url).href)
+  // 调用方式错了不是「证据不足」；混为一谈会让模型去补证据，而实际该改参数。
+  assert.equal(interpretExit(tools.TOOL_REGISTRY['privacy-scan'], 2).verdict, 'UNKNOWN')
+  assert.equal(interpretExit(tools.TOOL_REGISTRY['milestone-gate'], 2).verdict, 'NEEDS_EVIDENCE')
+  // 未登记的退出码一律 UNKNOWN，不猜。
+  assert.equal(interpretExit(tools.TOOL_REGISTRY['milestone-gate'], 7).verdict, 'UNKNOWN')
 })
 
 test('工具登记表覆盖 SOP 全部关键工具', () => {
@@ -1207,6 +1522,421 @@ test('身份层：桌面壳注入闪屏覆盖样式', async () => {
   // 作用域必须限定在启动闪屏根节点内，否则可能影响主界面。
   assert.ok(/\[data-dshBoot\]/.test(source),
     '闪屏覆盖必须限定在 [data-dshBoot] 作用域内')
+})
+
+// ── 损坏文件不得静默重置（数据销毁防线）────────────────────────────────────
+
+test('readJsonDoc：文件不存在返回 null，不抛错', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ars-doc-'))
+  try {
+    assert.equal(await sessionTasks.readJsonDoc(join(home, 'missing.json')), null)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('readJsonDoc：损坏时隔离原文件并抛错（不得当空文档）', async () => {
+  // 这是事故防线：调用方随后会写回整个文件，返回空文档等于把用户数据抹掉。
+  // 实测形态：绑定文件里一个坏字节 → 下次绑定把所有会话的任务绑定清空。
+  const home = await mkdtemp(join(tmpdir(), 'ars-doc-'))
+  try {
+    const path = join(home, 'broken.json')
+    await writeFile(path, '{ 这不是合法 JSON', 'utf8')
+    let threw = false
+    try { await sessionTasks.readJsonDoc(path) } catch { threw = true }
+    assert.ok(threw, '损坏的 JSON 必须抛错，不能返回空文档')
+    // 原文件必须仍在（改名保留），且原路径已腾空以便重建。
+    const entries = await readdir(home)
+    assert.equal(entries.length, 1, `隔离后应只剩备份文件，实际：${entries.join(', ')}`)
+    assert.ok(entries[0].startsWith('broken.json.corrupt-'), `备份文件名不对：${entries[0]}`)
+    const kept = await readFile(join(home, entries[0]), 'utf8')
+    assert.ok(kept.includes('这不是合法 JSON'), '备份内容必须与原文一致（不能丢数据）')
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('readJsonDoc：结构不符同样隔离并抛错', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ars-doc-'))
+  try {
+    const path = join(home, 'wrong.json')
+    await writeFile(path, JSON.stringify({ bindings: 'not-an-object' }), 'utf8')
+    let threw = false
+    try {
+      await sessionTasks.readJsonDoc(path, {
+        isValid: (value) => value !== null && typeof value === 'object'
+          && value.bindings !== null && typeof value.bindings === 'object',
+      })
+    } catch { threw = true }
+    assert.ok(threw, '结构不符必须抛错')
+    const entries = await readdir(home)
+    assert.equal(entries.length, 1, '结构不符也应隔离保留原文件')
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('registerTaskInWorkbench：登记表损坏时抛错而不是清空登记', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ars-wb-'))
+  try {
+    const registry = join(home, 'autoresearch-workbench.json')
+    await writeFile(registry, 'not json at all', 'utf8')
+    let threw = false
+    try { await sessionTasks.registerTaskInWorkbench(home, 'D:/x/task') } catch { threw = true }
+    assert.ok(threw, '损坏时必须抛错')
+    // 关键：原登记表不能被覆盖成「只有新任务」。
+    const entries = await readdir(home)
+    const backup = entries.find((name) => name.startsWith('autoresearch-workbench.json.corrupt-'))
+    assert.ok(backup !== undefined, `应保留备份，实际目录：${entries.join(', ')}`)
+    assert.equal(await readFile(join(home, backup), 'utf8'), 'not json at all')
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('registerTaskInWorkbench：首次登记正常建立登记表', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ars-wb-'))
+  try {
+    const first = await sessionTasks.registerTaskInWorkbench(home, 'D:/x/task-a')
+    assert.deepEqual(first.taskRoots, ['D:/x/task-a'])
+    // 幂等：重复登记不产生重复项。
+    const again = await sessionTasks.registerTaskInWorkbench(home, 'D:/x/task-a')
+    assert.equal(again.added, false)
+    const second = await sessionTasks.registerTaskInWorkbench(home, 'D:/x/task-b')
+    assert.deepEqual(second.taskRoots, ['D:/x/task-a', 'D:/x/task-b'])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// ── 工作台摘要：必须认真实标注文件的字段写法 ─────────────────────────────────
+
+test('工作台：minimize 指标下「最佳分」取最小而不是最大', async () => {
+  // 实测缺陷：硬写 Math.max，于是 AutoRe0566（StatErr，minimize）三轮
+  // 8.9 → 8.4 → 7.9，工作台把**最差**的首轮报成最佳。
+  const home = await mkdtemp(join(tmpdir(), 'ars-digest-'))
+  try {
+    await mkdir(join(home, 'expert_evidence'), { recursive: true })
+    await writeFile(join(home, 'expert_evidence', 'expert_annotation.json'),
+      JSON.stringify({ metric_name: 'StatErr', metric_direction: 'minimize（原始指标）；归一化后 maximize' }), 'utf8')
+    await writeFile(join(home, 'expert_evidence', 'trajectory_codex.json'),
+      JSON.stringify({ rounds: [8.9, 8.4, 7.9].map((score, i) => ({ round: i + 1, score })) }), 'utf8')
+    const digest = await ui.trajectoryDigest(home)
+    assert.equal(digest.codex.direction, 'minimize')
+    assert.equal(digest.codex.best, 7.9, `minimize 下最佳应为 7.9，实际 ${digest.codex.best}`)
+    assert.equal(digest.codex.latest, 7.9)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('工作台：maximize 指标下「最佳分」取最大', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ars-digest-'))
+  try {
+    await mkdir(join(home, 'expert_evidence'), { recursive: true })
+    await writeFile(join(home, 'expert_evidence', 'expert_annotation.json'),
+      JSON.stringify({ metric_direction: 'maximize' }), 'utf8')
+    await writeFile(join(home, 'expert_evidence', 'trajectory_codex.json'),
+      JSON.stringify({ rounds: [31.2, 46.8, 48.3].map((score, i) => ({ round: i + 1, score })) }), 'utf8')
+    const digest = await ui.trajectoryDigest(home)
+    assert.equal(digest.codex.best, 48.3)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('工作台：校准摘要认「扁平式」专家标注（anchors / metric_direction / 顶层统计量）', async () => {
+  // 实测缺陷：只认 score_contract + statistics 嵌套式，于是专家手写的真实标注
+  // 在工作台上整块显示为空 —— 数据都在，只是字段名对不上。
+  const home = await mkdtemp(join(tmpdir(), 'ars-digest-'))
+  try {
+    await mkdir(join(home, 'expert_evidence'), { recursive: true })
+    await mkdir(join(home, 'optimization_evidence'), { recursive: true })
+    await writeFile(join(home, 'expert_evidence', 'expert_annotation.json'), JSON.stringify({
+      metric_name: 'StatErr',
+      metric_direction: 'minimize（原始指标）',
+      anchors: { B_mean: null, U: null, calibration_status: 'NOT_RUN' },
+    }), 'utf8')
+    await writeFile(join(home, 'optimization_evidence', 'comparison_summary.json'), JSON.stringify({
+      status: 'NOT_RUN', U: 0.03656967585449946, n_baseline_expected: 3, B_mean: null,
+    }), 'utf8')
+    const cal = await ui.calibrationDigest(home)
+    assert.equal(cal.metric, 'StatErr')
+    assert.equal(cal.direction, 'minimize（原始指标）')
+    assert.equal(cal.upper, 0.03656967585449946)
+    assert.equal(cal.pairedRuns, 3)
+    assert.equal(cal.calibrationStatus, 'NOT_RUN')
+    // B/R 未跑时必须如实留空，不能编造。
+    assert.equal(cal.baseline, null)
+    assert.equal(cal.reference, null)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('工作台：校准摘要仍认「嵌套式」写法（两种都要支持）', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'ars-digest-'))
+  try {
+    await mkdir(join(home, 'expert_evidence'), { recursive: true })
+    await mkdir(join(home, 'optimization_evidence'), { recursive: true })
+    await writeFile(join(home, 'expert_evidence', 'expert_annotation.json'), JSON.stringify({
+      score_contract: {
+        metric: 'score', direction: 'maximize',
+        baseline: { raw_value: 31.2 }, reference: { raw_value: 46.8 }, upper_bound: { raw_value: 71 },
+      },
+    }), 'utf8')
+    await writeFile(join(home, 'optimization_evidence', 'comparison_summary.json'),
+      JSON.stringify({ statistics: { baseline_mean: 31.2, reference_mean: 46.8, paired_run_count: 3, baseline_sigma_multiple: 10 } }), 'utf8')
+    const cal = await ui.calibrationDigest(home)
+    assert.equal(cal.metric, 'score')
+    assert.equal(cal.baseline, 31.2)
+    assert.equal(cal.reference, 46.8)
+    assert.equal(cal.upper, 71)
+    assert.equal(cal.sigmaMultiple, 10)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// ── 与教程 v0.3.8 对齐 ──────────────────────────────────────────────────────
+
+test('G-DOCKERFILE：省略 tests/Dockerfile 是「复用 Solver 镜像」，不得判缺证据', () => {
+  // 教程 v0.3.8（L169/L512）明确允许复用 Solver 镜像、此时无需 tests/Dockerfile。
+  // 早期判 G3.3 UNKNOWN，而 UNKNOWN 与 FAIL 一样拦阶段推进 —— 一种被认可的交付
+  // 方式被当成了缺证据。
+  const md = ['Goal', 'Task Setting', 'Objective and Metrics', 'Allowed Scope',
+    'Hard Boundaries', 'Submission Instructions', 'Workflow & Iteration', 'Completion Criteria']
+    .map((s) => `## ${s}`).join('\n')
+  const result = gates.gateDockerPathContract({
+    environmentDockerfile: 'FROM x\nCOPY starter/ /s/\nCOPY public_eval/ /pe/\n',
+    testsDockerfile: undefined,
+    instructionMd: md,
+    sourceFiles: [{ path: 'workspace/reference/x.py', text: 'for a, b in train_loader:\n    loss.backward()\n' }],
+  })
+  assert.equal(result.verdict, 'RECOMMEND', JSON.stringify(result.checks.filter((c) => c.status !== 'PASS')))
+  for (const id of ['G3.3', 'G3.4', 'G3.5']) {
+    assert.equal(result.checks.find((c) => c.id === id).status, 'PASS', `${id} 应判 PASS（不适用）`)
+  }
+  // 反向：提供了 tests/Dockerfile 时越界 COPY 仍须 FAIL（放宽不能失效）。
+  const bad = gates.gateDockerPathContract({
+    environmentDockerfile: 'FROM x\nCOPY starter/ /s/\n',
+    testsDockerfile: 'FROM x\nCOPY ../secret /tests/\n',
+    instructionMd: md,
+    sourceFiles: [{ path: 'workspace/reference/x.py', text: 'for a, b in train_loader:\n    loss.backward()\n' }],
+  })
+  assert.equal(bad.checks.find((c) => c.id === 'G3.3').status, 'FAIL')
+})
+
+test('阶段 2：tests/Dockerfile 不是必需交付物（0.3.8 允许复用镜像）', () => {
+  const phase2 = phases.PHASES.find((p) => p.id === 'authoring')
+  const entry = phase2.deliverables.find((d) => d.path === 'workspace/harbor_task/tests/Dockerfile')
+  assert.ok(entry !== undefined, '阶段 2 应仍声明该路径（用于提示）')
+  assert.equal(entry.required, false, 'tests/Dockerfile 不应是必需项')
+  // 但 test.sh / grader.py 仍是必需 —— 评分入口与可信评分器不可省。
+  for (const path of ['workspace/harbor_task/tests/test.sh', 'workspace/harbor_task/tests/grader.py']) {
+    assert.equal(phase2.deliverables.find((d) => d.path === path).required, true, `${path} 应为必需`)
+  }
+})
+
+test('脚手架 run_summary 模板含 QA21 题包指纹字段（task_binding）', async () => {
+  // 0.3.8（L850-853 / QA21）要求 run_summary.json 记录 hash_profile 与
+  // task_content_sha256。模板此前缺这一整块，专家照模板填就永远缺字段。
+  const source = await readFile(
+    new URL('../packages/dsh-autoresearch/lib/scaffold.js', import.meta.url), 'utf8')
+  const block = source.match(/const RUN_SUMMARY_TEMPLATE = `([\s\S]*?)`/)
+  assert.ok(block !== null, '找不到 RUN_SUMMARY_TEMPLATE')
+  const template = JSON.parse(block[1])
+  assert.ok(template.task_binding !== undefined, '模板缺 task_binding')
+  assert.equal(template.task_binding.hash_profile, 'harbor-task-inputs-v1')
+  assert.ok('task_content_sha256' in template.task_binding, 'task_binding 缺 task_content_sha256')
+  // 其余 0.3.8 字段也应在（防止回退时被删掉）。
+  for (const key of ['agent_execution', 'fast_iteration_exception', 'validation']) {
+    assert.ok(template[key] !== undefined, `模板缺 ${key}`)
+  }
+  assert.ok('effective_rounds' in template.agent_execution[0], 'agent_execution 缺 effective_rounds')
+  assert.ok('typical_round_minutes' in template.agent_execution[0], 'agent_execution 缺 typical_round_minutes')
+})
+
+// ── 教程 v0.3.8：QA15 资源上限 / 例外条件 / 交付期自验 ──────────────────────
+
+/** 0.3.8 风格的合法 task.toml 对象（G2.1–G2.6 全过）。 */
+const contract038 = (over = {}) => ({
+  artifacts: ['/workspace/solution'],
+  task: { name: 'group/name', time_limit_seconds: 7200 },
+  agent: { network_mode: 'no-network' },
+  verifier: { network_mode: 'no-network', environment_mode: 'separate' },
+  environment: { build_timeout_sec: 3600, cpus: 16, gpus: 1, gpu_types: ['H20'] },
+  schema_version: '1.0',
+  ...over,
+})
+
+test('QA15：合规资源全 PASS；超核/CPU题带卡型 FAIL；非内场卡型 UNKNOWN', () => {
+  // QA15 由**发布期**打包门调用（教程把资源估算列为提交期质检项），
+  // 不放在阶段 2 的契约门 —— 否则"还没填资源字段"会阻塞构建。
+  const status = (payload, id) => gates.gateResourceLimits(payload).checks.find((c) => c.id === id).status
+  assert.ok(gates.gateResourceLimits(contract038()).checks.every((c) => c.status === 'PASS'))
+  // 两个 sandbox 的 CPU 相加才是单轮需求：64+32 = 96 > 64
+  const overCpu = contract038({
+    environment: { build_timeout_sec: 3600, cpus: 64, gpus: 1, gpu_types: ['H20'] },
+    verifier: { network_mode: 'no-network', environment_mode: 'separate', environment: { cpus: 32 } },
+  })
+  assert.equal(status(overCpu, 'G15.2'), 'FAIL')
+  // CPU 题（gpus 合计 0）不得声明 gpu_types
+  const cpuWithType = contract038({
+    environment: { build_timeout_sec: 3600, cpus: 16, gpus: 0, gpu_types: ['H20'] },
+  })
+  assert.equal(status(cpuWithType, 'G15.4'), 'FAIL')
+  // 非内场卡型 → 需人工复核（不是硬拒，教程允许「先调整再复核」）
+  const a800 = contract038({ environment: { build_timeout_sec: 3600, cpus: 16, gpus: 1, gpu_types: ['A800'] } })
+  assert.equal(status(a800, 'G15.4'), 'UNKNOWN')
+  // 卡型按**型号 token** 匹配：真实任务写厂商全名（`NVIDIA L20`），精确比对会误杀合法卡
+  for (const allowed of ['L20', 'l20', 'NVIDIA L20', 'NVIDIA L20 48GB', 'H20']) {
+    const okType = contract038({ environment: { build_timeout_sec: 3600, cpus: 16, gpus: 1, gpu_types: [allowed] } })
+    assert.equal(status(okType, 'G15.4'), 'PASS', `${allowed} 应判合法`)
+  }
+  for (const denied of ['NVIDIA A800 80GB PCIe', 'A100', 'V100']) {
+    const bad = contract038({ environment: { build_timeout_sec: 3600, cpus: 16, gpus: 1, gpu_types: [denied] } })
+    assert.equal(status(bad, 'G15.4'), 'UNKNOWN', `${denied} 应判需复核`)
+  }
+})
+
+test('QA15：单轮出分预算超 7200s 判需复核，不硬拒', () => {
+  // 教程 L600 允许「记录原因和判据并提交平台复核」，所以是 UNKNOWN 而不是 FAIL。
+  const over = contract038({ task: { name: 'group/name', time_limit_seconds: 14400 } })
+  const check = gates.gateResourceLimits(over).checks.find((c) => c.id === 'G15.1')
+  assert.equal(check.status, 'UNKNOWN')
+  assert.ok(/平台复核/.test(check.fix), check.fix)
+  // ≤7200 则 PASS
+  assert.equal(gates.gateResourceLimits(contract038()).checks.find((c) => c.id === 'G15.1').status, 'PASS')
+})
+
+/** 造 n 轮合法轨迹。 */
+const trajOf = (n) => ({
+  rounds: Array.from({ length: n }, (_, i) => ({
+    round: i + 1, policy_name: `p${i}`, method_summary: '本轮改动与结论',
+    status: 'ok', score: 1, failure_reason: null, retained_best: true,
+    time: '2026-10-13 01:00:00',
+  })),
+})
+const runsOf = (hours, rounds, minutes) => [
+  { runtime: 'Codex', model: 'A', duration_hours: hours, effective_rounds: rounds, typical_round_minutes: minutes },
+  { runtime: 'Codex', model: 'B', duration_hours: hours, effective_rounds: rounds, typical_round_minutes: minutes },
+]
+const EXCEPTION = {
+  used: true, non_training: true, short_iterations: true,
+  rollable_proved: true, evidence: '不涉及训练，典型单轮 12 分钟',
+}
+
+test('7 小时例外：不只看四个 flag，还要看轮数/节奏/重跑', () => {
+  const base = {
+    codexTrajectory: trajOf(3), seedTrajectory: trajOf(3),
+    runSummary: {
+      agent_execution: runsOf(8, 3, 12),
+      fast_iteration_exception: EXCEPTION,
+      validation: { best_method_rerun_passed: true },
+    },
+  }
+  assert.equal(gates.gateTrajectory(base).verdict, 'RECOMMEND')
+  // 条件 2：每条轨迹 ≥3 轮闭环 —— 勾了 flag 但只跑 1 轮不算
+  const thin = { ...base, codexTrajectory: trajOf(1), seedTrajectory: trajOf(1) }
+  assert.equal(gates.gateTrajectory(thin).checks.find((c) => c.id === 'G11:exception:rounds').status, 'FAIL')
+  // 条件 5：写明有效轮数与典型单轮耗时
+  const noPace = {
+    ...base,
+    runSummary: { ...base.runSummary, agent_execution: runsOf(8, 3, undefined) },
+  }
+  assert.equal(gates.gateTrajectory(noPace).checks.find((c) => c.id === 'G11:exception:pace').status, 'FAIL')
+  // 条件 4：best_method 已在干净快照重跑出分
+  const noRerun = {
+    ...base,
+    runSummary: { ...base.runSummary, validation: { best_method_rerun_passed: false } },
+  }
+  assert.equal(gates.gateTrajectory(noRerun).checks.find((c) => c.id === 'G11:exception:rerun').status, 'FAIL')
+  // 未用例外时不强制这三条（10h 路线不需要例外证据）
+  const notUsed = {
+    codexTrajectory: trajOf(3), seedTrajectory: trajOf(3),
+    runSummary: { agent_execution: runsOf(11, 9, 42), fast_iteration_exception: { used: false } },
+  }
+  assert.equal(gates.gateTrajectory(notUsed).verdict, 'RECOMMEND')
+})
+
+test('交付期自验：validation 四项任一为 false 即 REJECT', () => {
+  const hashes = { 'a.toml': 'x'.repeat(64) }
+  const base = {
+    sourceHashes: hashes, packedHashes: hashes,
+    bestMethodFiles: ['method.py'], gitState: { isRepo: false },
+    annotation: { task_id: 'x' }, expertDoc: '只陈述自验事实。',
+    taskToml: { task: { time_limit_seconds: 7200 }, environment: { cpus: 16, gpus: 1, gpu_types: ['H20'] } },
+  }
+  const pass = { ...base, runSummary: { validation: { baseline_passed: true, reference_passed: true, optimization_evidence_complete: true, best_method_rerun_passed: true } } }
+  assert.equal(gates.gatePackVerify(pass).verdict, 'RECOMMEND')
+  const fail = { ...base, runSummary: { validation: { baseline_passed: true, reference_passed: false, optimization_evidence_complete: true, best_method_rerun_passed: true } } }
+  assert.equal(gates.gatePackVerify(fail).checks.find((c) => c.id === 'G14.5').status, 'FAIL')
+  // 缺 validation 段 → UNKNOWN（不是 FAIL：可能只是没填）
+  const missing = { ...base, runSummary: {} }
+  assert.equal(gates.gatePackVerify(missing).checks.find((c) => c.id === 'G14.5').status, 'UNKNOWN')
+})
+
+test('best_method 内容：空目录与混入 Reference/密钥都判 FAIL', () => {
+  const hashes = { 'a.toml': 'x'.repeat(64) }
+  const base = {
+    sourceHashes: hashes, packedHashes: hashes, gitState: { isRepo: false },
+    annotation: { task_id: 'x' }, expertDoc: 'ok',
+    taskToml: { task: { time_limit_seconds: 7200 }, environment: { cpus: 16, gpus: 1, gpu_types: ['H20'] } },
+    runSummary: { validation: { baseline_passed: true, reference_passed: true, optimization_evidence_complete: true, best_method_rerun_passed: true } },
+  }
+  assert.equal(gates.gatePackVerify({ ...base, bestMethodFiles: [] }).checks.find((c) => c.id === 'G14.6').status, 'FAIL')
+  for (const bad of [['method.py', 'reference/fast.py'], ['method.py', 'deploy.key'], ['hidden/x.npz']]) {
+    assert.equal(gates.gatePackVerify({ ...base, bestMethodFiles: bad }).checks.find((c) => c.id === 'G14.6').status, 'FAIL',
+      `应拦下：${bad.join(', ')}`)
+  }
+  assert.equal(gates.gatePackVerify({ ...base, bestMethodFiles: ['method.py', 'solve.sh'] }).checks.find((c) => c.id === 'G14.6').status, 'PASS')
+})
+
+test('Git 清理：非仓库不适用；有 remote/tag 判需复核', () => {
+  const hashes = { 'a.toml': 'x'.repeat(64) }
+  const base = {
+    sourceHashes: hashes, packedHashes: hashes, bestMethodFiles: ['method.py'],
+    annotation: { task_id: 'x' }, expertDoc: 'ok',
+    taskToml: { task: { time_limit_seconds: 7200 }, environment: { cpus: 16, gpus: 1, gpu_types: ['H20'] } },
+    runSummary: { validation: { baseline_passed: true, reference_passed: true, optimization_evidence_complete: true, best_method_rerun_passed: true } },
+  }
+  assert.equal(gates.gatePackVerify({ ...base, gitState: { isRepo: false } }).checks.find((c) => c.id === 'G14.7').status, 'PASS')
+  const dirty = gates.gatePackVerify({ ...base, gitState: { isRepo: true, remotes: ['origin'], tags: ['v1'] } })
+  assert.equal(dirty.checks.find((c) => c.id === 'G14.7').status, 'UNKNOWN')
+  assert.equal(dirty.verdict, 'NEEDS_EVIDENCE')
+})
+
+test('专家不得夹带审核结论（annotation 与说明文档）', () => {
+  const hashes = { 'a.toml': 'x'.repeat(64) }
+  const base = {
+    sourceHashes: hashes, packedHashes: hashes, bestMethodFiles: ['method.py'], gitState: { isRepo: false },
+    runSummary: { validation: { baseline_passed: true, reference_passed: true, optimization_evidence_complete: true, best_method_rerun_passed: true } },
+  }
+  assert.equal(gates.gatePackVerify({ ...base, annotation: { task_id: 'x', approved: true }, expertDoc: 'ok' })
+    .checks.find((c) => c.id === 'G14.8').status, 'FAIL')
+  assert.equal(gates.gatePackVerify({ ...base, annotation: { task_id: 'x' }, expertDoc: '本题已通过审核。' })
+    .checks.find((c) => c.id === 'G14.9').status, 'FAIL')
+  assert.equal(gates.gatePackVerify({ ...base, annotation: { task_id: 'x' }, expertDoc: '官方 Hidden 结果: 0.8' })
+    .checks.find((c) => c.id === 'G14.9').status, 'FAIL')
+})
+
+test('G-NOP-RESULT：fromTask 递归找证据，不依赖固定目录名', async () => {
+  // 教程 v0.3.8 L29 只要求把四类证据「放入 expert_evidence/」，未规定子目录名。
+  // 早期脚手架固定造 nop_selfcheck/，把一种约定当成了要求。
+  const home = await mkdtemp(join(tmpdir(), 'ars-nop-'))
+  try {
+    // 故意放在非约定路径下，且分散两层
+    await mkdir(join(home, 'expert_evidence', 'trial-20261013'), { recursive: true })
+    await writeFile(join(home, 'expert_evidence', 'trial-20261013', 'config.json'), '{"agent":{"name":"nop"}}', 'utf8')
+    await writeFile(join(home, 'expert_evidence', 'result.json'), '{"finished_at":"2026-10-13 03:00:00"}', 'utf8')
+    await writeFile(join(home, 'expert_evidence', 'trial-20261013', 'reward.json'), '{"reward":0}', 'utf8')
+    await writeFile(join(home, 'expert_evidence', 'trial.log'), 'stdout...', 'utf8')
+    const payload = await plugin.collectFromTask(home, 'G-NOP-RESULT')
+    assert.ok(payload.config !== undefined, '应找到 config.json')
+    assert.ok(payload.result !== undefined, '应找到 result.json')
+    assert.equal(payload.reward?.reward, 0, 'reward.json 应被解析为对象')
+    assert.equal(payload.logPresent, true, '应找到运行日志')
+    assert.equal(payload.sameTrial, true)
+    // 门禁据此判定：config 有 nop、separate、reward 有限 → 需补 result 字段仍能给出结论
+    const result = gates.gateNopResult({
+      config: payload.config,
+      result: { ...payload.result, verifier_environment_mode: 'separate', agent_info: { name: 'nop' }, verifier_result: { rewards: 0 } },
+      reward: payload.reward,
+      logPresent: payload.logPresent,
+      sameTrial: payload.sameTrial,
+    })
+    assert.equal(result.verdict, 'RECOMMEND', JSON.stringify(result.checks.filter((c) => c.status !== 'PASS')))
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('阶段 4：nop_selfcheck 不是必需交付物（目录名不固定）', () => {
+  const phase4 = phases.PHASES.find((p) => p.id === 'release')
+  const entry = phase4.deliverables.find((d) => d.path === 'expert_evidence/nop_selfcheck')
+  assert.ok(entry !== undefined, '应仍声明该路径作为推荐位置')
+  assert.equal(entry.required, false, 'nop_selfcheck 不应是必需项')
 })
 
 // ── 执行 ────────────────────────────────────────────────────────────────────

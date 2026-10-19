@@ -48,10 +48,31 @@ function makeProjectionRegistry() {
   }
 }
 
-/** 记录型假会话。 */
-function makeSession() {
+/**
+ * 记录型假会话。
+ *
+ * **必须带 `id` 与 `header.cwd`** —— 它们不是装饰：`mode.js` 的进入命令会调
+ * `bindSessionTask(dshHome, session.id, ...)` 并读 `session.header.cwd`，
+ * 而 `bindSessionTask` 对空 `sessionId` 是**硬抛错**（「缺少会话标识，无法绑定任务根」）。
+ *
+ * 这个桩原先缺这两个字段，于是本测试**从未跑到断言就 crash** ——
+ * 一直没被发现是因为它挂在「进入模式」那一步，报错看起来像产品缺陷，
+ * 实际是夹具不完整。
+ *
+ * `cwd` **必须显式传测试的任务根，不能用 `process.cwd()` 兜底**：
+ * 进入命令会 `detectTaskRoot(session.header.cwd)` 并自动绑定，
+ * 而测试运行时的 `process.cwd()` 是**仓库根** —— 它本身也是一个任务根
+ *（有 autoresearch-state.json），于是会话被绑到仓库根而不是临时任务根，
+ * 后续 pre-step 读的是另一份状态文件。实测表现是「运行 D 状态改了却不重新注入」，
+ * 排查时极易误判成产品缺陷。
+ */
+let sessionSeq = 0
+function makeSession(cwd) {
   const log = []
+  sessionSeq += 1
   return {
+    id: `ablation-session-${sessionSeq}`,
+    header: { cwd },
     events: () => log,
     append: (type, data) => {
       log.push({ type, data })
@@ -91,6 +112,21 @@ const report = (name, ok, detail) => {
 
 // ── 准备任务目录：阶段 authoring，一门禁 REJECT ──────────────────────────────
 
+/**
+ * 把 DSH_HOME 指向临时目录。
+ *
+ * **必须在 apply 之前设置**：模式装配会调 `bindSessionTask(dshHome, ...)`，
+ * 而 dshHome 在未显式传入时由 `resolveDshHome()` 从 `$DSH_HOME` 解析，
+ * 兜底是 `<cwd>/.dsh-home` —— 也就是**用户的真实目录**。
+ *
+ * 本测试此前没有会话 id，所以 `bindSessionTask` 直接抛错、从未写到盘上；
+ * 给桩补上 id 后立刻暴露出这个泄漏：测试把 `ablation-session-N → <仓库根>`
+ * 写进了用户真实的 `autoresearch-session-tasks.json`。
+ * 测试**绝不能**碰用户的真实状态，所以这里显式隔离。
+ */
+const dshHome = await mkdtemp(join(tmpdir(), 'autoresearch-ablation-home-'))
+process.env.DSH_HOME = dshHome
+
 const taskRoot = await mkdtemp(join(tmpdir(), 'autoresearch-ablation-'))
 await writeFile(join(taskRoot, 'autoresearch-state.json'), JSON.stringify({
   version: 1,
@@ -113,7 +149,7 @@ console.log('任务状态：阶段 authoring，G-FEASIBILITY=REJECT\n')
 // ── 运行 A：模式未激活 ──────────────────────────────────────────────────────
 
 console.log('【运行 A】模式未激活')
-const sessionA = makeSession()
+const sessionA = makeSession(taskRoot)
 const { ctx: ctxA, record: recordA } = makeContext(sessionA, taskRoot)
 plugin.apply(ctxA, { taskRoot, promptSection: true, enableModeCommand: true })
 
@@ -134,7 +170,7 @@ report('未激活时 pre-step 不追加', preA.messages.length === 0, `messages=
 // ── 运行 B：模式激活（唯一变量）────────────────────────────────────────────
 
 console.log('\n【运行 B】模式激活（唯一变量：追加一条模式事件）')
-const sessionB = makeSession()
+const sessionB = makeSession(taskRoot)
 const { ctx: ctxB, record: recordB } = makeContext(sessionB, taskRoot)
 plugin.apply(ctxB, { taskRoot, promptSection: true, enableModeCommand: true })
 
@@ -231,7 +267,7 @@ report('退出后不再注入', preE.messages.length === 0)
 
 console.log('\n【运行 F】会话恢复：模式是否保留（新进程，内存为空）')
 // 构造一个「日志里有进入事件、但插件是全新实例」的会话
-const restored = makeSession()
+const restored = makeSession(taskRoot)
 restored.append('command/run', { name: 'autoresearch', commandId: 'restore-1', args: '' })
 restored.append('command/done', { commandId: 'restore-1' })
 const { ctx: ctxF, record: recordF } = makeContext(restored, taskRoot)
@@ -263,6 +299,8 @@ report('机制有效（开关模式产生可观测差异）',
   (textB?.length ?? 0) > 0 && (textA?.length ?? 0) === 0 && preB.messages.length === 1)
 
 await rm(taskRoot, { recursive: true, force: true })
+await rm(dshHome, { recursive: true, force: true })
+delete process.env.DSH_HOME
 
 const failed = results.filter((entry) => !entry.ok)
 console.log(`\n消融实验：${results.length - failed.length} 通过，${failed.length} 失败，共 ${results.length} 项`)

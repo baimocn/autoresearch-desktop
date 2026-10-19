@@ -30,6 +30,9 @@ const PACKAGES = [
   'dsh-autoresearch-qa',
   'dsh-autoresearch-remote',
   'dsh-autoresearch-api',
+  // 模型议会是**独立工作台**：自己的面板、自己的路由前缀、自己的配置文件，
+  // 与 dsh-autoresearch-ui 不共用任何东西 —— 所以它不依赖 UI 包的顺序。
+  'dsh-model-council',
   // 身份层必须排在最后：它按 id 禁用 dsh-web-app 声明的 ui-brand-official 占位行，
   // 而 profile 的 patch 层是后者覆盖前者 —— 排在 dsh-web-app 之前就不生效。
   // 见 packages/dsh-ars-brand/README.md「顺序约束」。
@@ -47,6 +50,16 @@ const HEADLESS_PACKAGES = [
   'dsh-autoresearch',
   // 双路质检自身由本插件编排
   'dsh-autoresearch-qa',
+  // qa 直接 import 本包的 lib/tools.js（resolveUpstreamAsset）。
+  // 它是 qa 的传递依赖，pnpm 会把它链进来 —— 但下面那轮 rm 只清本清单里的包，
+  // 于是它的副本永远停在首次安装的版本：实测 headless 侧的 tools.js 比
+  // autoresearch 侧旧了一个版本，而两边跑的是同一份 qa 代码。
+  // 必须显式列出来，才会被强制重新链接。
+  'dsh-autoresearch-gates',
+  // 同理：qa 还 import 本包的 lib/profile-patch.js 与 lib/providers.js
+  // （读 provider 声明与凭据引用）。漏了它同样会留下陈旧副本 ——
+  // 实测 headless 侧三个文件都落后于源码。
+  'dsh-autoresearch-api',
 ]
 
 function parseArgs(argv) {

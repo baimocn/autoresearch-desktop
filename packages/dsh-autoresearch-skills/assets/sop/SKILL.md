@@ -35,7 +35,7 @@ metadata:
 5. **双镜像**：Agent context 为 `environment/`，Verifier context 为 `tests/`。公开 Dev 评分供 Agent 迭代；Hidden、Reference 和两类完整证据包不进入 Agent。私有材料允许预置/生成/安全注入，但必须有准备和评分调用依据。
 6. **移交合同**：`artifacts = ["/workspace/solution"]` 在 TOML 顶层；`[verifier] environment_mode = "separate"`。运行时 solution 从 Starter 初始化，源码可选 Oracle solution 不等同提交面。所有依赖模型/配置必须在合同覆盖路径；Verifier 自带评分依赖。
 7. **迭代时序**：每轮在 Agent 容器内修改→公开 Dev 评测→保留/回退；Agent 退出后才移交独立 Verifier，执行 `bash /tests/test.sh` 写有限数值 reward。Hidden 不能回传用于本次调优。Verifier 内候选仍须受限，不能读取私有标签或改评分器/reward。
-8. **两组长程**：三期快照指定 `Codex + GPT-5.6 Sol` 与 `Codex + Seed 2.1 Turbo`，同任务/Prompt/资源、独立输出，默认最大推理档位，各有效 ≥10h。只有无训练/微调、单轮很短、各 ≥7h、各 ≥3 方法闭环、持续演进/后续方向与最佳干净复验等全例外证据齐备，才可按 7h。排队/安装/构建/阻塞不计，不相加；12h 容器稳定性是另一项目标。
+8. **两组长程**：三期快照**示例**为 `Codex + GPT-5.6 Sol` 与 `Codex + Seed 2.1 Turbo`；**模型组合可调整，不按示例型号判退**（教程 v0.3.8 L5/L655：模型名称不作为固定验收条件，调整模型无需额外审批）—— 核对的应是「两条真实独立运行 + 有效时长」，不是型号名字。同任务/Prompt/资源、独立输出，默认最大推理档位，各有效 ≥10h。只有无训练/微调、单轮很短、各 ≥7h、各 ≥3 方法闭环、持续演进/后续方向与最佳干净复验等全例外证据齐备，才可按 7h。排队/安装/构建/阻塞不计，不相加；12h 容器稳定性是另一项目标。
 9. **最佳与轨迹**：每轮八字段 `round, policy_name, method_summary, status, score, failure_reason, retained_best, time`；score 为声明的 Public/Dev 原始指标，失败未知用 null。jsonl 整理成各自 rounds 数组；不把 Harbor ATIF 改名当专家轨迹。按统一 Dev 聚合/质量门选唯一 best_method，结束前恢复完整 solution，并在干净快照复验。
 10. **最终 NOP**：当前运行版本的一次 NOP Trial 同次 config/result/reward/日志必交，可引用平台同版本记录；0 分本身不失败。NOP 保留原有 Starter，不一律是空提交；缺提交早退只覆盖该分支，不能代替有效候选完整评分。
 11. **探针优先**（源自实战，见 [实战教训](references/field-lessons.md)）：正式 B/R 之前必须先跑 **1 seed × (B+R) 的增益探针**（≤2× 单跑耗时），未确认 Δ 与判定条件可行前，禁止投入全 seed 协议。探针须用**论文主打规模**，不用"小一号"替代。
@@ -63,6 +63,8 @@ metadata:
 32. **依赖仓库自带配置前，先让它跑出一次退出码 0**（源自实战，见 [L30](references/field-lessons.md)）：仓库里"存在、有注释、被文档引用"的配置可能**从未端到端跑过**。实测两个：`ufull.yaml`（每轮加 0 个点 ⇒ `torch.cat` 空列表 ⇒ `RuntimeError`）与 `coreset_maxdist`（latent 分支 `TypeError`）。判据：`--cfg job --resolve` 合成成功后，再用**最小规模**（epochs=1~2、iter=1、池调小）真跑一遍，确认关键阶段痕迹与退出码。**注释描述的是作者意图，不是实际行为；注释不算证据。**
 33. **`subprocess(text=True)` 必须同写 `encoding="utf-8"` + `errors`**（源自实战，见 [L31](references/field-lessons.md)）：`text=True` 只开文本模式，编码取 `locale.getpreferredencoding()`（Windows 实测 `cp936`），用它解 `gh` 等工具的 UTF-8 输出会抛 `UnicodeDecodeError`，**该异常若被吞掉就会把"编码 bug"误报成"凭据/网络不通"**。自查：`grep -rn "text=True" --include=*.py tools/ scripts/ | grep -v encoding=`。配套纪律：**自检失败分支必须打印原始异常**，不许只说"某某不通"。
 34. **API 建 git tree 时 entry 名必须是仓库相对路径**（源自实战，见 [L32](references/field-lessons.md)）：`POST /git/trees` 传绝对路径（`D:/.../SKILL.md`）**不报错**，git 会建出幽灵子树 `D:`，真实文件继承 `base_tree` 旧 blob ⇒ **提交"成功"但内容没变**。判据：推送后独立回拉 `git/trees/<tree>?recursive=1`，顶层若出现 `^[A-Za-z]:` 项即中招；逐文件核对要比 **blob sha**（不比 size）。`tools/push_via_api.py` 已加 `--repo-root` 换算 + 越界拒绝 + entry 名自检。**自校验不得与写入路径同源**——否则双重确认同一个错误。
+35. **内场未支持的声明一律不能写**（教程 v0.3.8 L19/L131/L258/L985）：当前内场**不生效**的约束有 `storage_mb` 磁盘配额、`no-network`、网络白名单，以及依赖 Compose 的多容器部署方案。**warning 后继续运行、或降级为联网，都不算约束已生效** —— 写进 task.toml 只会让人以为限制了、实际没有，于是隔离设计从根上不成立。题面不得出现这三类声明；若题目逻辑依赖它们，先改题面/环境/评分设计使其在真实条件下成立，无法落实时先补齐平台能力再提交。判据：`grep -nE 'storage_mb|no-network|allowlist' task.toml` 命中即须解释为什么必要。
+36. **题包指纹必须交**（教程 v0.3.8 L18/L892，QA21 机检项）：`run_summary.json` 的 `task_binding` 记 `hash_profile`（固定 `harbor-task-inputs-v1`）与 `task_content_sha256`；**范围固定为 `environment/`、`task.toml`、`tests/`、`instruction.md` 四项**，目录内**全量递归**（含隐藏文件与空目录，不按类型排除模型/缓存/输出）。算法由平台提供 `scripts/task_fingerprint.py`（不在本仓库内），缺字段待补，哈希不一致须核对版本关系。版本变化时保留对应题包并复核受影响运行，**不能用新哈希替代历史版本依据**。
 
 没有真实结果时填写 `NOT_RUN`/null；全部正式要求满足才写 COMPLETE/true。格式错误、非作弊 Hard Gate、超时、资源超限、基础设施故障分开标记；Hard Gate=-1 不参与正常排序。合法负分用状态区分。泄露标签或评分写权限失守须返修隔离。
 
@@ -97,4 +99,4 @@ metadata:
 
 审查结果按“优化面 → B/R 方法与全部成对分数 → G01/G02/G03 → 双轨/格式 → Harbor/适用 QA → 修复动作与验收材料”呈现。每项引用真实文件/字段；只有缺证写待补证，不将缺证推断成已发生作弊。
 
-分别陈述：静态复核、已有实跑证据、本次独立复跑、未覆盖/待平台正式 Hidden。QA07/08 静态范围只是题面泄露，QA15 静态跳过资源上限；不因此豁免真实隔离或资源要求。官方最终验收由平台完成，不写专家自封的审核通过结论。
+分别陈述：静态复核、已有实跑证据、本次独立复跑、未覆盖/待平台正式 Hidden。QA07/08 静态范围只是题面泄露；QA15 的口径在教程 v0.3.8 与 v0.3.2 快照间有分歧（前者写「检查有依据的资源估算」，后者写「跳过资源上限」），**无论哪种读法资源要求都不被取消**，按有依据准备即可；QA21 除 JSON 合法性外还含**题包指纹** `task_binding`（见规则 36）。不因此豁免真实隔离或资源要求。官方最终验收由平台完成，不写专家自封的审核通过结论。

@@ -60,12 +60,37 @@ const open = await evaluate(`(() => {
 console.log('open panel:', JSON.stringify(open))
 await sleep(2500)
 
+// 两级导航：一级是「推进 / 核查 / 任务组合 / API 配置」，二级（模式/四阶段/…）
+// 只在所属分组被选中时才出现在 DOM 里。所以点二级标签前必须先把它的分组点亮 ——
+// 早期版本只找 `.aw-tab`，于是「模式」永远点不到（返回 false），
+// 而巡检又拿同一个页面量了七次、全部报 OK（典型的假通过）。
+const GROUP_OF = {
+  '模式': '推进', '四阶段': '推进', '门禁': '推进',
+  '轨迹': '核查', '双路质检': '核查', '远端实验': '核查', '证据浏览': '核查',
+}
 const tabClick = (label) => `(() => {
-  const btn = [...document.querySelectorAll('.aw-tab')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})
-  if (!btn) return false
-  btn.click()
-  return true
+  const byText = (sel) => [...document.querySelectorAll(sel)]
+    .find((b) => b.textContent.trim() === ${JSON.stringify(label)})
+  const top = byText('.aw-tab:not(.aw-tab-sub)')
+  if (top) { top.click(); return 'top' }
+  const sub = byText('.aw-tab-sub')
+  if (sub) { sub.click(); return 'sub' }
+  const group = [...document.querySelectorAll('.aw-tab:not(.aw-tab-sub)')]
+    .find((g) => g.textContent.trim() === ${JSON.stringify(GROUP_OF[label] ?? '__none__')})
+  if (!group) return false
+  group.click()
+  return 'group-only'
 })()`
+
+/** 二级标签要点两次：先切分组（渲染出二级行），再点子标签。 */
+async function clickTab(label) {
+  const first = await evaluate(tabClick(label))
+  if (first === 'group-only') {
+    await sleep(800)
+    return evaluate(tabClick(label))
+  }
+  return first
+}
 
 // ── 1. 任务组合页：默认根应落在提示条里，不出现在卡片网格 ──────────────────
 const tasksPage = await evaluate(`(() => {
@@ -83,7 +108,7 @@ console.log('任务组合页:', JSON.stringify(tasksPage, null, 2))
 await screenshot(`${outPrefix}-tasks.png`)
 
 // ── 2. 未选任务直接点「模式」：应出现任务选择器，而不是默认根详情 ────────────
-console.log('click 模式:', await evaluate(tabClick('模式')))
+console.log('click 模式:', await clickTab('模式'))
 await sleep(2200)
 const modeNoTask = await evaluate(`(() => ({
   pickCount: document.querySelectorAll('.aw-pick').length,
@@ -117,14 +142,20 @@ await screenshot(`${outPrefix}-detail.png`)
 // ── 4. 逐页巡检：每页应有内容且无 JS 异常 ──────────────────────────────────
 const report = []
 for (const label of ['四阶段', '门禁', '轨迹', '双路质检', '远端实验', '证据浏览', 'API 配置']) {
-  await evaluate(tabClick(label))
+  await clickTab(label)
   await sleep(1600)
   const state = await evaluate(`(() => {
     const panel = document.querySelector('.autoresearch-panel')
     const text = panel ? panel.innerText.trim() : ''
-    return { len: text.length, head: text.slice(0, 40).replace(/\\s+/g, ' ') }
+    // 同时取「当前点亮的标签」—— 用它证明**确实切过去了**。
+    // 只断言"页面非空"是不够的：七个页面量到同一份内容也会全部报 OK。
+    const on = [...document.querySelectorAll('.aw-tab-sub, .aw-tab')]
+      .filter((b) => b.getAttribute('data-on') === '1')
+      .map((b) => b.textContent.trim())
+    return { len: text.length, on }
   })()`)
-  report.push(`${label}: ${state.len > 0 ? 'OK' : 'EMPTY'} (${state.len})`)
+  const switched = (state?.on ?? []).includes(label)
+  report.push(`${label}: ${switched && state.len > 0 ? 'OK' : 'FAIL(未切换)'} (${state?.len})`)
 }
 console.log(report.join(' | '))
 

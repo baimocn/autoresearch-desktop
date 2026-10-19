@@ -77,7 +77,10 @@ intake|G-SELECT=null|missing=2
 - 阶段或门禁状态一变，下一步立刻收到新指令
 - 状态没变时不把相同文本反复塞进上下文
 
-提醒次数记在 `autoresearch/step` 事件里，可回放审计。
+提醒次数**不落任何自定义会话事件**：写自定义事件类型会让日志整体不可读
+（读者只在信封带 `ignorable: true` 时接受未知事件，而 `Session.append()` 设不了这个标记 ——
+本项目因此出过一次「所有含注入消息的历史会话加载失败」）。
+抑制状态是**进程内内存**（按会话指纹），真相始终在状态文件与远端磁盘上。
 
 ## 阻塞优先级
 
@@ -113,7 +116,10 @@ intake|G-SELECT=null|missing=2
 
 ## 已知限制
 
-- **模式需要会话内切换**：`/autoresearch` 是命令，不能通过配置文件默认开启。这是刻意的——做题与随便聊天应当区分。
+- **默认需要会话内切换**：`/autoresearch` 是命令。配置里有 `modeActiveByDefault` 开关
+  （默认 `false`，随包 profile 也未开启），本意是给无人值守场景用；
+  目前没有任何部署把它打开，所以实际行为就是「必须会话内切换」。
+  两者不矛盾，但要知道开关存在且未启用。
 - **注入的消息是 user 角色**：system 提示在请求组装期固定，而这里要在步与步之间插入新指令。作为持久消息追加才能与日志一致。`source.kind` 标记为 `autoresearch-step`，便于与真人输入区分。
 - **提醒抑制按会话内存**：进程重启后第一次一定注入，之后才按指纹抑制。这比「重启后静默」安全。
 
@@ -122,9 +128,13 @@ intake|G-SELECT=null|missing=2
 一个会话驱动**一个**任务根；同时推进 N 个任务 = N 个会话各绑一个根。
 工作台面板（侧边栏 AutoResearch → 任务）总览全部注册任务，只读。
 
-- `/autoresearch task <路径>` 把当前会话绑定到任务根；绑定存
+- `/autoresearch-task <路径>` 把当前会话绑定到任务根；绑定存
   `DSH_HOME/autoresearch-session-tasks.json`（sessionId → 路径，重启仍生效）
-- `/autoresearch task` 查看绑定；`/autoresearch unbind` 解除
+- `/autoresearch-task`（不带参数）查看当前绑定
+
+  > 命令名是**带连字符**的 `/autoresearch-task`，不是 `/autoresearch task`。
+  > 早期版本用 `/autoresearch task <路径>` 的子命令形态，已拆分为独立命令。
+  > 另外**没有** `unbind` 命令 —— 换绑直接再执行一次 `/autoresearch-task <新路径>`。
 - 工具的任务根解析顺序：**显式 task 参数 > 会话绑定 > 进程配置根**；
   绑定与默认根不同时，每步指令回显绑定路径并要求工具调用显式携带 task
 - 会话绑定与默认根一致时不占指令篇幅 —— 指令里只有差异信息才值得占预算

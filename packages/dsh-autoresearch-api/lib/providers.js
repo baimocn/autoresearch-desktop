@@ -113,8 +113,18 @@ export function validateApiDeclaration(declaration) {
   if (keyEnv !== undefined && !isValidRefName(keyEnv)) {
     problems.push(`keyEnv "${keyEnv}" 不是合法的凭据引用名（须匹配 ${REF_PATTERN}，即环境变量名形态）`)
   }
-  if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.trim() === '')) {
-    problems.push('apiKey 必须是非空字符串（或省略此项只声明引用名）')
+  if (apiKey !== undefined) {
+    if (typeof apiKey !== 'string' || apiKey.trim() === '') {
+      problems.push('apiKey 必须是非空字符串（或省略此项只声明引用名）')
+    } else if (/[\r\n]/.test(apiKey)) {
+      // 凭据文档是逐行写的 YAML（`  NAME: value`），值里带换行会**注入任意顶层键**：
+      //   apiKey: "sk-x\nEVIL_KEY: injected"
+      // 而 dsh-credentials-local 对未知顶层键是**硬拒绝**的：
+      //   `unknown top-level key "EVIL_KEY" in <file>` → 整份凭据文档无法加载，
+      // 于是所有自定义路由一起失效（比"多一个条目"严重得多）。
+      // 与 headers 同一类洞，那边已经挡了，这里之前漏了。
+      problems.push('apiKey 不得含换行（会破坏凭据文档结构，导致整份凭据无法加载）')
+    }
   }
   if (headers !== undefined) {
     if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
@@ -249,9 +259,22 @@ export async function readCredentialRefs(credentialsPath) {
  *
  * 刻意做最小改写：只动 refs 段里需要改的行，其余字节原样保留 ——
  * 凭据文档里可能有 records 段与注释，全量重写会丢掉作者意图。
- * 写入后收紧权限到 0600（凭据服务启动时会检查，可读范围超出所有者即拒绝启动）。
+ *
+ * 权限：写入后尝试收紧到 0600。dsh-credentials-local 自己也会检查并**拒绝启动**
+ * 可读范围超出所有者的文档 —— 但那个检查**只在 POSIX 生效**，上游注释写明
+ * 「Windows has no mode to inspect — its ACLs are not expressible」。
+ * 所以 Windows 上这里拿不到 0600，这是平台限制而不是本函数的疏漏；
+ * 对外文案必须如实说明，不能统一宣称"已收紧到 0600"。
  */
 export async function writeCredentialRefs(credentialsPath, updates) {
+  // 纵深防御：即使上游校验被绕过，写入端也不能被值里的换行注入新条目
+  // （凭据文档是逐行 YAML，`  NAME: value` 的值带 \n 就等于多写一行）。
+  for (const [name, value] of Object.entries(updates)) {
+    if (typeof value !== 'string' || /[\r\n]/.test(value)) {
+      throw new Error(`凭据 ${name} 的值不得含换行（会破坏凭据文档结构）`)
+    }
+  }
+
   let text
   try {
     text = await readFile(credentialsPath, 'utf8')
@@ -300,7 +323,10 @@ export async function writeCredentialRefs(credentialsPath, updates) {
   await mkdir(dirname(credentialsPath), { recursive: true })
   const temporary = `${credentialsPath}.${process.pid}.tmp`
   await writeFile(temporary, next, 'utf8')
-  await chmod(temporary, 0o600).catch(() => { /* Windows 无 POSIX 位；凭据服务另有检查 */ })
+  await chmod(temporary, 0o600).catch(() => {
+    // Windows 无 POSIX 位，chmod 既不改权限也不抛错 —— 这里拿不到 0600 是平台限制。
+    // 上游 dsh-credentials-local 的越权检查同样只在 POSIX 生效。
+  })
   await rename(temporary, credentialsPath)
   return { path: credentialsPath, refs: Object.keys(updates) }
 }

@@ -59,8 +59,12 @@ autoresearch_api_add { route: "ollama", models: ["qwen2.5:14b-instruct"], setDef
 
 | 位置 | 内容 | 权限 |
 |---|---|---|
-| `build/autoresearch-api.patch.yml` | `apiKeyEnv: "MY_GATEWAY_API_KEY"` —— 只有名字 | 普通文件 |
-| `$DSH_HOME/.credentials.yaml` 的 `refs` 段 | `MY_GATEWAY_API_KEY: sk-...` | 0600 |
+| `<DSH_HOME>/profiles/<name>/cordis.patch.yml` 的 `llm-pi-ai.providers` 段 | `apiKeyEnv: "MY_GATEWAY_API_KEY"` —— 只有名字 | 普通文件 |
+| `$DSH_HOME/.credentials.yaml` 的 `refs` 段 | `MY_GATEWAY_API_KEY: sk-...` | POSIX 下 0600；Windows 无权限位（见下） |
+
+> 路由写进 **profile 自己的 `cordis.patch.yml`**，不是另起一个
+> `build/autoresearch-api.patch.yml`（该文件不存在）。原因：再叠一层 `llm-pi-ai`
+> 补丁会与 profile 层冲突；直接合并进 profile 用户层才能被真实加载。
 
 也可以完全不用凭据文档，直接 `export MY_GATEWAY_API_KEY=...`（启动环境可见即可）。
 
@@ -113,7 +117,13 @@ autoresearch_api_dual_lanes {
 
 两路 route 相同时**直接拒绝**——不会让你跑完两路才在聚合阶段发现身份撞车。
 
-写完后 `npm run profile:install` 刷新 profile，重启 harness，再跑 `autoresearch_qa_dual`。
+两路配置写到 `<DSH_HOME>/autoresearch-qa-lanes.json`（运行期实时读取，**不需要重装 profile**）。
+自定义路由本身写在 profile patch 层，所以新增/修改路由仍需重启 harness 才生效；
+但只改「哪两路」时重启即可，不必重跑 `npm run profile:install`。
+
+> 早期版本把两路写进仓库里的 `packages/dsh-autoresearch-qa/cordis.patch.yml`：
+> 装进 profile 后该路径不存在（工具直接失败），而且即使从源码跑成功也要
+> 重装 profile + 重启才生效，与「配置是实时的」预期不符。
 
 ## 校验为什么必须真加载
 
@@ -157,7 +167,11 @@ autoresearch_api_add {
 
 ## 密钥明文存储（本机设计）
 
-密钥以**明文**保存在 `DSH_HOME/.credentials.yaml`（权限 0600）：
+密钥以**明文**保存在 `DSH_HOME/.credentials.yaml`。
+权限说明：POSIX 下写入后收紧到 0600；**Windows 没有 POSIX 权限位**，
+`chmod` 既不生效也不报错，实际可读范围由账户 ACL 决定，本工具无法收紧。
+（上游 `dsh-credentials-local` 的「可读范围超出所有者即拒绝启动」检查
+同样只在 POSIX 生效，其源码注释写明 Windows 的 ACL 无法用 mode 表达。）
 
 ```yaml
 version: 1

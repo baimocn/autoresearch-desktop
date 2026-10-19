@@ -33,12 +33,16 @@ import { parseTomlSubset } from './lib/toml.js'
 import { renderStepDirective } from './lib/workflow.js'
 import { installMode } from './lib/mode.js'
 import {
-  resolveDshHome, resolveTaskRoot, registerTaskInWorkbench, bindSessionTask,
+  resolveDshHome, resolveTaskRoot, registerTaskInWorkbench, bindSessionTask, readJsonDoc,
+  locateTaskRootById, knownTaskParents,
 } from './lib/session-tasks.js'
 import { inspectPwshCommand } from './lib/windows-guard.js'
 
 /** 需要 agent 运行时来构造注入消息。 */
-export const inject = ['tools', 'systemPrompt', 'sessionProjections', 'agents']
+// inject 是**激活条件**：声明的服务缺失时整个插件不激活。
+// 因此只列真正用到的 —— `agents` 曾经列在这里但全包无人使用，
+// 白白多一条「这个 profile 没装 agents 服务就不激活」的约束。
+export const inject = ['tools', 'systemPrompt', 'sessionProjections']
 
 export const name = 'autoresearch'
 
@@ -133,6 +137,23 @@ export function apply(ctx, rawConfig) {
     sessionId: exec?.agent?.session?.id ?? null,
     fallback: resolveRoot(),
   })
+
+  /**
+   * 按 Task ID 定位任务根时的搜索根清单。
+   *
+   * 顺序有讲究：配置根（可能正是 cwd/launch-root）只作最后一站，
+   * 因为「工作台默认启动目录」恰恰是路径漂移的落点，不该优先命中。
+   *   · config.taskSearchRoots —— 显式配置，最高优先
+   *   · 已知任务所在目录的父目录 —— 同批任务通常并排存放
+   *   · 进程工作目录
+   */
+  const locateRootsFor = async (home, cfg) => {
+    const roots = []
+    if (Array.isArray(cfg.taskSearchRoots)) roots.push(...cfg.taskSearchRoots)
+    for (const known of await knownTaskParents(home)) roots.push(known)
+    roots.push(resolveRoot())
+    return roots.filter((item) => typeof item === 'string' && item.trim() !== '')
+  }
 
   /** 统一包装：读状态 → 变更 → 原子写回。 */
   const mutate = async (taskRoot, mutator) => {
@@ -235,7 +256,35 @@ export function apply(ctx, rawConfig) {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     async execute(args, exec) {
-      const taskRoot = await resolveRootFor(exec, args.task)
+      let idSearchMiss = null
+      // 任务根解析（顺序即优先级）：
+      //   1. 显式 task 路径
+      //   2. 会话绑定
+      //   3. **按 taskId 定位同名目录** —— 修复路径漂移的关键一步
+      //   4. 配置根（process.cwd()）
+      // 第 3 步之前不存在：taskId 只写进状态，不参与寻址，导致传了
+      // taskId 也仍落到 launch-root，题包写进工作台默认启动目录。
+      let taskRoot
+      let idLocated = null
+      if (typeof args.task === 'string' && args.task.trim() !== '') {
+        taskRoot = await resolveRootFor(exec, args.task)
+      } else {
+        const bound = await resolveRootFor(exec, undefined)
+        const boundIsConfigRoot = bound === resolveRoot()
+        // 只在「没有更具体的绑定」时才按 id 定位，避免覆盖用户显式绑定的任务。
+        if (boundIsConfigRoot && typeof args.taskId === 'string' && args.taskId.trim() !== '') {
+          const located = await locateTaskRootById(args.taskId, await locateRootsFor(dshHome, config))
+          if (located.found !== null) {
+            taskRoot = located.found
+            idLocated = located.found
+          } else {
+            taskRoot = bound
+            idSearchMiss = located.searched
+          }
+        } else {
+          taskRoot = bound
+        }
+      }
       const scaffold = await scaffoldTaskPackage(taskRoot, {
         title: args.title,
         taskName: args.taskName ?? 'TODO/task-name',
@@ -266,6 +315,11 @@ export function apply(ctx, rawConfig) {
       }))
       return {
         taskRoot,
+        rootResolution: idLocated !== null
+          ? `按 taskId 定位到既有任务根：${idLocated}`
+          : (idSearchMiss !== null
+            ? `未找到 taskId 同名目录，回退到配置根 ${taskRoot}（已搜索：${idSearchMiss.join('；')}）`
+            : `使用配置根/会话绑定：${taskRoot}`),
         created: scaffold.created,
         skippedExisting: scaffold.skipped,
         phase: state.phase,
@@ -301,6 +355,18 @@ export function apply(ctx, rawConfig) {
         type: 'boolean',
         description: '为 true 时从任务目录自动读取 task.toml / 两个 Dockerfile / instruction.md / 轨迹 / 证据 JSON 填充 payload',
       },
+      /**
+       * G-PACK-VERIFY 的交付 ZIP。
+       *
+       * 没有这个参数时，G14.1–G14.3 的判据输入**结构上无法提供** ——
+       * `sourceHashes`/`packedHashes` 只能靠调用方构造，而工具 schema 里
+       * 没有能传它们的入口，于是三项恒判 PASS（空集 PASS）。
+       */
+      artifact: {
+        type: 'string',
+        description: '提交 ZIP 路径（相对任务根或绝对）。G-PACK-VERIFY 据此核对打包一致性；'
+          + '省略时自动在任务根**一层**内查找唯一的 .zip（不递归，避免误取 _data/ 下的数据集 zip）',
+      },
       task: { type: 'string', description: '任务根路径；多任务时必传（会话已绑定时可省）' },
     },
     output: {
@@ -314,7 +380,7 @@ export function apply(ctx, rawConfig) {
 
       let payload = args.payload ?? {}
       if (args.fromTask === true) {
-        payload = { ...(await collectFromTask(taskRoot, args.gate)), ...payload }
+        payload = { ...(await collectFromTask(taskRoot, args.gate, { artifact: args.artifact })), ...payload }
       }
 
       let result
@@ -421,11 +487,14 @@ export function apply(ctx, rawConfig) {
       const absolute = resolveTaskPath(taskRoot, file)
       assertInsideTaskRoot(taskRoot, absolute)
 
-      let document = { rounds: [] }
-      try {
-        document = JSON.parse(await readFileText(absolute))
-        if (!Array.isArray(document.rounds)) document.rounds = []
-      } catch { /* 文件不存在或损坏时从空结构开始，不静默吞掉内容 */ }
+      // 轨迹文件损坏时必须报错并保留原文件，不能从空结构开始 ——
+      // 紧接着就会写回整个文件，那等于把已记录的全部轮次静默抹掉。
+      const parsed = await readJsonDoc(absolute, {
+        // rounds 缺失（空文件/首轮）可以接受；存在但不是数组即结构损坏。
+        isValid: (value) => value !== null && typeof value === 'object'
+          && (value.rounds === undefined || Array.isArray(value.rounds)),
+      })
+      const document = { ...(parsed ?? {}), rounds: parsed?.rounds ?? [] }
 
       const round = {
         round: document.rounds.length + 1,
@@ -439,7 +508,34 @@ export function apply(ctx, rawConfig) {
       }
 
       const { validateTrajectoryRound } = await import('./lib/gates.js')
+      const { calibrationConstantsOf, detectCalibrationScore } = await import('./lib/trajectory.js')
       const problems = validateTrajectoryRound(round, round.round - 1)
+
+      // ── 写入侧的语义护栏：score 不该是标定常数 ───────────────────────────
+      //
+      // 实测 AutoRe1841 有三轮把 `reference_normalized`（R 在评分公式下的位置）
+      // 填进了 score —— 那是标定常数，B/R/U 一定就不变，与本轮方法改进了多少
+      // 无关。页面于是显示"最佳分 0.793603"，看起来像跑出了成绩。
+      //
+      // 这里**只告警、不拒写、不改数**：轨迹是专家的原始记录，平台不该
+      // 替作者决定什么能记。但必须把它作为 problems 说出来，让作者知道。
+      const readJsonAt = async (relative) => {
+        try {
+          return JSON.parse(await readFileText(resolveTaskPath(taskRoot, relative)))
+        } catch { return undefined }
+      }
+      const constants = calibrationConstantsOf({
+        anchors: await readJsonAt('workspace/harbor_task/tests/hidden_assets/anchors.json'),
+        comparison: await readJsonAt('optimization_evidence/comparison_summary.json'),
+        annotation: await readJsonAt('expert_evidence/expert_annotation.json'),
+      })
+      const asConstant = detectCalibrationScore(round.score, constants)
+      if (asConstant !== null) {
+        problems.push(`score=${round.score} 与该题的标定常数 ${asConstant.label} 逐位相同。`
+          + 'score 按 SOP 应是「本轮方法的 Public/Dev 原始指标实测值」；'
+          + '标定常数（B/R/U 定后不变）不随方法改进而变。'
+          + '若本轮没有真实出分，请把 score 记 null 并在 failure_reason 里写明原因。')
+      }
 
       document.rounds.push(round)
       await mkdirFor(absolute)
@@ -450,6 +546,7 @@ export function apply(ctx, rawConfig) {
         round: round.round,
         entry: round,
         problems,
+        calibrationWarning: asConstant,
         compliant: problems.length === 0,
         nextStep: problems.length === 0
           ? '继续下一轮迭代；刷新当前最佳时把完整可运行代码更新到 expert_evidence/best_method/。'
@@ -503,7 +600,7 @@ function formatTime(date) {
  * 从任务目录自动收集门禁输入。
  * 只读取公开位置；不触碰 tests/ 内部私有材料。
  */
-async function collectFromTask(taskRoot, gate) {
+export async function collectFromTask(taskRoot, gate, options = {}) {
   const { readFile } = await import('node:fs/promises')
   const readIfPresent = async (relativePath) => {
     try {
@@ -556,11 +653,13 @@ async function collectFromTask(taskRoot, gate) {
       return tomlText === undefined ? {} : { ...parseTomlSubset(tomlText) }
     }
     case 'G-DOCKERFILE': {
-      // 红线 1 需要 reference/ 与 starter/ 的源码文本，红线 6 需要两个 Dockerfile。
+      // 红线 1 需要「解题者可见的代码」与「参考实现」的源码文本，红线 6 需要两个 Dockerfile。
       // 若不在这里读入源码，红线在真实流程里永远不会跑（只会报"未扫描"），
       // 那等于红线只存在于消融实验里 —— 这是必须避免的"纸面门禁"。
+      //
+      // 目录清单取 RED_LINE_SOURCE_DIRS（唯一真源，接线测试也从那里取）。
       const sourceFiles = []
-      for (const dir of ['workspace/reference', 'workspace/starter', 'workspace/harbor_task/reference']) {
+      for (const dir of RED_LINE_SOURCE_DIRS) {
         for (const rel of await listSourceFiles(dir)) {
           const text = await readIfPresent(rel)
           if (typeof text === 'string') sourceFiles.push({ path: rel, text })
@@ -571,7 +670,7 @@ async function collectFromTask(taskRoot, gate) {
         testsDockerfile: await readIfPresent('workspace/harbor_task/tests/Dockerfile'),
         instructionMd: await readIfPresent('workspace/harbor_task/instruction.md'),
         sourceFiles,
-        sourceScope: 'workspace/reference + workspace/starter',
+        sourceScope: RED_LINE_SOURCE_DIRS.join(' + '),
       }
     }
     case 'G-TRAJECTORY':
@@ -580,6 +679,41 @@ async function collectFromTask(taskRoot, gate) {
         seedTrajectory: await readJsonIfPresent('expert_evidence/trajectory_seed.json'),
         runSummary: await readJsonIfPresent('expert_evidence/run_summary.json'),
       }
+    case 'G-FEASIBILITY': {
+      // 这道门此前**没有 fromTask 分支** —— 传 fromTask:true 时喂进去的是空
+      // payload，门禁只会报「缺少 Baseline/Reference/U」三个 UNKNOWN。于是
+      // 方向（direction）永远传不到，而它正是决定 Δ 符号的那个字段。
+      //
+      // 真源：workspace/harbor_task/tests/hidden_assets/anchors.json —— 它是
+      // 评分锚点的规范落点（B/R/U/σ_B/direction 都在里面，见教程 V3 §8）。
+      // 兼容没有该文件的任务：此时**不补** direction，让它保持未声明，
+      // 由门禁如实报 UNKNOWN，而不是替它猜一个方向。
+      const anchors = await readJsonIfPresent('workspace/harbor_task/tests/hidden_assets/anchors.json')
+      // 注意 readJsonIfPresent 的缺失契约是 **undefined**（不是 null）。
+      if (anchors === undefined || anchors === null) return {}
+      const baselineValues = Array.isArray(anchors.baseline_values) ? anchors.baseline_values : null
+      const referenceValues = Array.isArray(anchors.reference_values) ? anchors.reference_values : null
+
+      // G1.9「evaluator 可从候选产物独立复算主指标」**必须有证据**才能声明为真。
+      // 判据：tests/ 下存在把候选 checkpoint 现场加载并重算指标的 grader
+      // （真的复算，而不是读一个已经算好的分数文件）。读不到就**不声明**，
+      // 让 G1.9 如实落在 UNKNOWN —— 这里曾经无条件写 true，等于凭空盖章。
+      const grader = await readIfPresent('workspace/harbor_task/tests/grader.py')
+      const graderSrc = typeof grader === 'string' ? grader : ''
+      const loadsCheckpoint = /torch\.load|load_state_dict|safetensors/.test(graderSrc)
+      const recomputesMetric = /def\s+\w*(balanced_accuracy|accuracy|score|metric)\w*\s*\(/.test(graderSrc)
+      const referenceRecomputed = loadsCheckpoint && recomputesMetric
+
+      return {
+        ...(baselineValues === null ? {} : { baselineValues }),
+        ...(referenceValues === null ? {} : { referenceValues }),
+        ...(typeof anchors.upper_bound === 'number' ? { upper: anchors.upper_bound } : {}),
+        // direction 只在**确实是两个字面量之一**时才带上。
+        ...(anchors.direction === 'minimize' || anchors.direction === 'maximize'
+          ? { direction: anchors.direction } : {}),
+        ...(referenceRecomputed ? { referenceRecomputed: true } : {}),
+      }
+    }
     case 'G-SINGLE-SOURCE': {
       // 采集**结构化**声明（键 / 值 / 来源），而不是拼好的字符串。
       //
@@ -610,10 +744,182 @@ async function collectFromTask(taskRoot, gate) {
       }
       return { anchorDeclarations: declarations, staleDeclarations: [] }
     }
+    case 'G-NOP-RESULT': {
+      // 教程 v0.3.8 L29 只要求「把同一次 Trial 的 config.json、result.json、
+      // reward.txt/json 与运行日志**放入 expert_evidence/**」—— **没有规定子目录名**
+      // （早期脚手架固定造 `expert_evidence/nop_selfcheck/`，把一种约定当成了要求）。
+      // 因此这里递归查找，按文件名认证据，而不是按目录。
+      const found = { config: null, result: null, reward: null, log: null }
+      const scan = async (dir, depth = 0) => {
+        if (depth > 6) return
+        let entries
+        try {
+          entries = await readdir(resolveTaskPath(taskRoot, dir), { withFileTypes: true })
+        } catch {
+          return
+        }
+        for (const entry of entries) {
+          if (entry.name === '__pycache__' || entry.name === 'best_method') continue
+          const rel = `${dir}/${entry.name}`
+          if (entry.isDirectory()) { await scan(rel, depth + 1); continue }
+          const lower = entry.name.toLowerCase()
+          if (lower === 'config.json' && found.config === null) found.config = rel
+          else if (lower === 'result.json' && found.result === null) found.result = rel
+          else if (/^reward\.(txt|json)$/.test(lower) && found.reward === null) found.reward = rel
+          else if (/\.log$/.test(lower) && found.log === null) found.log = rel
+        }
+      }
+      await scan('expert_evidence')
+      const readEvidence = async (relative) => {
+        if (relative === null) return null
+        return relative.endsWith('.json')
+          ? await readJsonIfPresent(relative)
+          : await readIfPresent(relative)
+      }
+      const config = await readEvidence(found.config)
+      const result = await readEvidence(found.result)
+      const rewardText = await readEvidence(found.reward)
+      let reward = rewardText
+      if (typeof rewardText === 'string' && found.reward?.endsWith('.json')) {
+        try { reward = JSON.parse(rewardText) } catch { reward = rewardText }
+      }
+      return {
+        config: config ?? undefined,
+        result: result ?? undefined,
+        reward: reward ?? undefined,
+        logPresent: found.log !== null,
+        // 四类证据都来自同一目录树 → 视为同一次 Trial（更强的同源性判定需平台侧核对）
+        sameTrial: Object.values(found).filter((value) => value !== null).length >= 3,
+        evidenceFiles: found,
+      }
+    }
+    case 'G-PACK-VERIFY': {
+      // 交付期的三项事实：自验声明、best_method 内容、Git 清理状态。
+
+      // 不 spawn 任何进程 —— Git 状态直接读 .git/config 与 refs，避免门禁依赖 git 可执行文件。
+      const runSummary = await readJsonIfPresent('expert_evidence/run_summary.json')
+
+      const bestMethodFiles = []
+      const walk = async (dir, depth = 0) => {
+        if (depth > 6) return
+        let entries
+        try {
+          entries = await readdir(resolveTaskPath(taskRoot, dir), { withFileTypes: true })
+        } catch {
+          return
+        }
+        for (const entry of entries) {
+          if (entry.name === '__pycache__') continue
+          const rel = `${dir}/${entry.name}`
+          if (entry.isDirectory()) await walk(rel, depth + 1)
+          else bestMethodFiles.push(rel)
+        }
+      }
+      await walk('expert_evidence/best_method')
+
+      let gitState = null
+      const gitConfig = await readIfPresent('.git/config')
+      if (gitConfig === undefined) {
+        gitState = { isRepo: false }
+      } else {
+        const remotes = [...gitConfig.matchAll(/^\[remote\s+"([^"]+)"\]/gm)].map((match) => match[1])
+        const tags = []
+        try {
+          for (const name of await readdir(resolveTaskPath(taskRoot, '.git/refs/tags'))) {
+            if (!name.startsWith('.')) tags.push(name)
+          }
+        } catch { /* 无 loose tags */ }
+        const packed = await readIfPresent('.git/packed-refs')
+        if (typeof packed === 'string') {
+          for (const line of packed.split('\n')) {
+            const match = /^[0-9a-f]{40}\s+refs\/tags\/(.+)$/.exec(line.trim())
+            if (match !== null) tags.push(match[1])
+          }
+        }
+        gitState = { isRepo: true, remotes, tags: [...new Set(tags)] }
+      }
+
+      const annotation = await readJsonIfPresent('expert_evidence/expert_annotation.json')
+      const expertDoc = await readIfPresent('expert_evidence/专家作业说明文档.md')
+      const tomlText = await readIfPresent('workspace/harbor_task/task.toml')
+      const taskToml = tomlText === undefined ? null : parseTomlSubset(tomlText)
+
+      // ── 打包一致性三项判据的输入（G14.1–G14.3）──────────────────────────
+      //
+      // 此前这个分支**不返回** sourceHashes / packedHashes / forbiddenEntries，
+      // 而 `gatePackVerify` 的这三个字段默认 `{}`/`{}`/`[]` —— 于是三项恒判 PASS，
+      // 报告写着「交付包含全部 **0** 个文件」。空集上的 PASS，判定力为零，
+      // 比 FAIL 更危险（FAIL 促使人排查，假绿灯让人以为已验证）。
+      //
+      // 采集范围与排除项取自任务实际使用的打包脚本 `_m5_pack_submission.py`
+      //（DELIVER 三目录 + 缓存/备份排除），细节见 lib/pack-scope.js 的模块说明。
+      //
+      // 采集失败**不让整个门禁抛错**：那样调用方拿不到任何结论。
+      // 改为把失败原因写进 `packError`，由 gatePackVerify 如实报 UNKNOWN。
+      let pack = { sourceHashes: {}, packedHashes: {}, forbiddenEntries: [], note: null, packError: null }
+      try {
+        const { collectSourceHashes, collectPackedHashes, findDeliveryZip } =
+          await import('./lib/pack-scope.js')
+        const source = await collectSourceHashes(taskRoot)
+        const found = await findDeliveryZip(taskRoot, options.artifact)
+        if (found.path === null) {
+          // 找不到交付 ZIP 时**不猜、不跳过**：三项判据应当报 UNKNOWN。
+          pack = {
+            sourceHashes: source.files,
+            packedHashes: {},
+            forbiddenEntries: source.forbidden,
+            note: null,
+            packError: `未找到交付 ZIP：${found.reason}`,
+          }
+        } else {
+          const packed = await collectPackedHashes(found.path)
+          pack = {
+            sourceHashes: source.files,
+            packedHashes: packed.files,
+            forbiddenEntries: [...source.forbidden, ...packed.forbidden],
+            note: `交付 ZIP：${found.path}（${packed.entries} 个条目；${found.reason}）`,
+            packError: null,
+          }
+        }
+      } catch (error) {
+        pack.packError = `采集打包判据输入失败：${error?.message ?? error}`
+      }
+
+      return {
+        runSummary, bestMethodFiles, gitState, annotation, expertDoc, taskToml,
+        sourceHashes: pack.sourceHashes,
+        packedHashes: pack.packedHashes,
+        forbiddenEntries: pack.forbiddenEntries,
+        packNote: pack.note,
+        packError: pack.packError,
+      }
+    }
     default:
       return {}
   }
 }
+
+/**
+ * 红线 1（答案泄露）要扫描的源码目录 —— 脚手架**真实创建**的那些。
+ *
+ * 为什么单独提出来并导出：这份清单曾经写错（`workspace/starter` 与
+ * `workspace/harbor_task/reference` 两个都不存在），于是 starter 代码从来没被
+ * 扫过 —— 而 starter 正是交到解题者手上的那份代码，泄露重灾区。更糟的是接线
+ * 测试复刻了同样的错目录，所以它也跟着漏。
+ *
+ * 现在它是唯一真源：生产路径与接线测试都从这里取，测试不可能再"自己编一套"。
+ * 依据见 lib/scaffold.js 创建的目录与 lib/phases.js 声明的交付物。
+ */
+export const RED_LINE_SOURCE_DIRS = Object.freeze([
+  // 参考实现：解题者不可见，但一旦被 starter 引用就是泄露
+  'workspace/reference',
+  // 解题者可见的三份材料 —— 泄露在这里最直接
+  'workspace/harbor_task/environment/starter',
+  'workspace/harbor_task/environment/public_eval',
+  'workspace/harbor_task/environment/public_assets',
+  // 可信评测材料
+  'workspace/harbor_task/environment/trusted',
+])
 
 /** 供其它模块复用的导出。 */
 export { parseTomlSubset }

@@ -170,6 +170,40 @@ test('默认模型 patch 单独成文件', () => {
 
 // ── 凭据文档最小改写 ────────────────────────────────────────────────────────
 
+test('apiKey 含换行必须拒绝（会注入凭据文档的顶层键）', () => {
+  // 凭据文档是逐行 YAML，值里带换行等于多写一行：
+  //   apiKey: "sk-x\nEVIL_KEY: injected"
+  // 而 dsh-credentials-local 对未知顶层键是硬拒绝的 —— 整份凭据文档无法加载，
+  // 所有自定义路由一起失效。headers 早已挡了这个形态，apiKey 之前漏了。
+  const bad = providers.validateApiDeclaration({
+    route: 'gw', api: 'openai-completions', models: ['m'], apiKey: 'sk-x\nEVIL_KEY: injected',
+  })
+  assert.ok(bad.some((p) => p.includes('不得含换行')), JSON.stringify(bad))
+  // \r 同样要挡（Windows 换行）。
+  const badCr = providers.validateApiDeclaration({
+    route: 'gw', api: 'openai-completions', models: ['m'], apiKey: 'sk-x\rEVIL: 1',
+  })
+  assert.ok(badCr.some((p) => p.includes('不得含换行')), JSON.stringify(badCr))
+  // 正常密钥不受影响。
+  const good = providers.validateApiDeclaration({
+    route: 'gw', api: 'openai-completions', models: ['m'], apiKey: 'sk-normal-key',
+  })
+  assert.equal(good.length, 0, JSON.stringify(good))
+})
+
+test('凭据写入端纵深防御：值含换行直接抛错', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'autoresearch-cred-'))
+  try {
+    const path = join(dir, '.credentials.yaml')
+    let threw = false
+    try { await providers.writeCredentialRefs(path, { EVIL: 'sk-x\nINJECTED: 1' }) } catch { threw = true }
+    assert.ok(threw, '写入端也必须挡住含换行的值（不依赖上游校验）')
+    // 确认没有留下半个文件。
+    const { existsSync } = await import('node:fs')
+    assert.equal(existsSync(path), false, '被拒绝的写入不应留下文件')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
 test('凭据文档：不存在时创建并写入 refs', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'autoresearch-cred-'))
   try {

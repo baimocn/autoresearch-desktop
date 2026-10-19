@@ -111,6 +111,16 @@ function makeContext() {
       },
       getSectionOrder() { return [] },
     },
+    // UI 插件与模型议会在 apply 期注册 HTTP 路由（ctx.effect 里立刻调用）。
+    // 缺了它会在 apply 期直接抛 TypeError —— 而那是**桩的缺陷**，不是插件的。
+    connection: {
+      fetch: {
+        register(spec) {
+          services.set('__route__', spec)
+          return { dispose() {} }
+        },
+      },
+    },
   }
   // 常见别名：Cordis 的 ctx 同时是函数与对象，插件可能用 ctx.plugin(...)。
   ctx.root = ctx
@@ -120,7 +130,7 @@ function makeContext() {
 /** 每个插件声明的工具（用于断言数量与关键项）。 */
 const EXPECTED = {
   'dsh-autoresearch': ['autoresearch_init', 'autoresearch_gate', 'autoresearch_advance', 'autoresearch_trajectory'],
-  'dsh-autoresearch-gates': ['autoresearch_gate_run'],
+  'dsh-autoresearch-gates': ['autoresearch_gate_env', 'autoresearch_gate_run'],
   'dsh-autoresearch-qa': ['autoresearch_qa_pack', 'autoresearch_qa_lanes', 'autoresearch_qa_dual', 'autoresearch_qa_verify', 'autoresearch_deliberate'],
   'dsh-autoresearch-api': ['autoresearch_api_add', 'autoresearch_api_verify', 'autoresearch_api_dual_lanes'],
   'dsh-autoresearch-remote': [
@@ -128,6 +138,8 @@ const EXPECTED = {
     'autoresearch_remote_probe_job', 'autoresearch_remote_snapshot', 'autoresearch_remote_status',
     'autoresearch_remote_exec',
   ],
+  // 模型议会：把议会接入普通会话的两个工具（模式未开时调用会被拒绝）。
+  'dsh-model-council': ['council_convene', 'council_read'],
 }
 
 const PLUGINS = Object.keys(EXPECTED)

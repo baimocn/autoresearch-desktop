@@ -21,9 +21,13 @@ import { PHASES, TASK_MODES, INTAKE_CHECKS, VARIANT_RULES } from 'dsh-autoresear
 import { GATES, TRAJECTORY_FIELDS, R_LO, R_HI, SIGMA_MULT_REQUIRED } from 'dsh-autoresearch/lib/gates.js'
 import { readState, checkPhaseDeliverables, summarize } from 'dsh-autoresearch/lib/state.js'
 import {
-  isTaskRoot, TASK_ROOT_MARKERS,
+  isTaskRoot, TASK_ROOT_MARKERS, readJsonDoc,
 } from 'dsh-autoresearch/lib/session-tasks.js'
 import { readLanesFile, writeLanesFile, resolveSavedLanes } from 'dsh-autoresearch-qa/lib/lanes.js'
+import { readTaskMetricDirection } from 'dsh-autoresearch-gates/lib/tools.js'
+import {
+  summarizeRounds, calibrationConstantsOf, detectCalibrationScore, dualTrackStatus,
+} from 'dsh-autoresearch/lib/trajectory.js'
 import { probeJob, DEFAULT_POLICY } from 'dsh-autoresearch-remote/lib/session.js'
 import { readLedger, writeLedger, recordProbe } from 'dsh-autoresearch-remote/lib/ledger.js'
 import {
@@ -96,20 +100,42 @@ function dshHomeOf() {
 const registryPath = () => join(dshHomeOf(), 'autoresearch-workbench.json')
 
 async function readRegistry(defaultRoot) {
-  try {
-    const parsed = JSON.parse(await readFile(registryPath(), 'utf8'))
-    if (Array.isArray(parsed.taskRoots)) {
-      const roots = [...new Set(parsed.taskRoots.filter((item) => typeof item === 'string' && item !== ''))]
-      if (defaultRoot !== undefined && !roots.includes(defaultRoot)) roots.unshift(defaultRoot)
-      return roots
-    }
-  } catch { /* 不存在或损坏：从默认根开始 */ }
-  return defaultRoot === undefined ? [] : [defaultRoot]
+  // 损坏时隔离并抛错（由路由转成显式 JSON 错误），不从默认根重来 ——
+  // 本函数的结果会被 writeRegistry 整体写回，静默重来等于把用户登记过的
+  // 任务列表全抹掉。与会话绑定共用同一份 readJsonDoc。
+  const parsed = await readJsonDoc(registryPath(), {
+    isValid: (value) => value !== null && typeof value === 'object' && Array.isArray(value.taskRoots),
+  })
+  const roots = [...new Set((parsed?.taskRoots ?? [])
+    .filter((item) => typeof item === 'string' && item !== ''))]
+  if (defaultRoot !== undefined && !roots.includes(defaultRoot)) roots.unshift(defaultRoot)
+  return roots
 }
 
+/**
+ * 读登记表，把损坏转成显式 JSON 错误。
+ *
+ * 不能让异常逃逸：webserver 会把路由抛出的异常一律吞成 400 空响应，
+ * 错误信息连同原因一起消失（用户只看到「请求失败」）。
+ *
+ * @returns { roots } 或 { error } —— 调用点必须先检查 error。
+ */
+async function readRegistryOrError(defaultRoot) {
+  try {
+    return { roots: await readRegistry(defaultRoot) }
+  } catch (error) {
+    return { error: errorResponse(error.message, 500) }
+  }
+}
+
+/** 原子写（临时文件 + 改名）：避免写一半被读到，留下半个 JSON。 */
 async function writeRegistry(roots) {
+  const { writeFile, rename } = await import('node:fs/promises')
+  const path = registryPath()
+  const temporary = `${path}.tmp`
   const payload = JSON.stringify({ version: 1, taskRoots: roots }, null, 2)
-  await import('node:fs/promises').then(({ writeFile }) => writeFile(registryPath(), payload, 'utf8'))
+  await writeFile(temporary, `${payload}\n`, 'utf8')
+  await rename(temporary, path)
 }
 
 /**
@@ -138,38 +164,85 @@ async function readJsonSafe(path) {
   }
 }
 
-/** 双轨轨迹的「最新分 / 最佳分 / 最近分数序列」。 */
-async function trajectoryDigest(taskRoot) {
+/**
+ * 主指标方向 —— 决定「最佳分」取最大还是最小。
+ *
+ * 委托给 gates 包的 `readTaskMetricDirection`（唯一真源）：这条读取路径
+ * 有过两次字段形状错误，都记录在那里 ——
+ *   · 早期读 UI 假设的 `score_contract.direction`，而真实标注用
+ *     `metric_direction`；夹具与真实文件形状不同，于是**测试全绿而面板空白**。
+ *   · 修好后又读 `comparison.metric.direction`，但真实文件是
+ *     `comparison.metric`（字符串）+ `comparison.direction`（顶层），
+ *     于是 AutoRe1841 的方向仍读成 null，minimize 题的最佳分照样取错。
+ * 两次都是「本地另写一份解析」，所以这里不再自己解析。
+ */
+export async function metricDirectionOf(taskRoot) {
+  const found = await readTaskMetricDirection(taskRoot)
+  return found?.direction ?? null
+}
+
+/**
+ * 双轨轨迹的「最新分 / 最佳分 / 最近分数序列」+ 双轨是否真的开跑。
+ *
+ * 计数与最佳分走 `lib/trajectory.js`（唯一真源）—— 那里说明了为什么要区分
+ * 「未出分」与「失败」，以及为什么最佳分必须按指标方向取。
+ */
+export async function trajectoryDigest(taskRoot) {
+  const direction = await metricDirectionOf(taskRoot)
   const digest = {}
   for (const track of ['codex', 'seed']) {
     const document = await readJsonSafe(join(taskRoot, 'expert_evidence', `trajectory_${track}.json`))
     const rounds = Array.isArray(document?.rounds) ? document.rounds : []
-    const scores = rounds.filter((round) => typeof round.score === 'number').map((round) => round.score)
+    const summary = summarizeRounds(rounds, direction)
     digest[track] = {
-      rounds: rounds.length,
-      latest: scores.length > 0 ? scores[scores.length - 1] : null,
-      best: scores.length > 0 ? Math.max(...scores) : null,
+      rounds: summary.total,
+      scored: summary.scored,
+      noScore: summary.noScore,
+      failed: summary.failed,
+      latest: summary.latestScore,
+      best: summary.bestScore,
+      direction,
       recent: rounds.slice(-24).map((round) => (typeof round.score === 'number' ? round.score : null)),
     }
   }
   return digest
 }
 
-/** B/R/U 校准摘要：读专家标注的 score_contract 与对比统计，缺就是 null。 */
-async function calibrationDigest(taskRoot) {
+/** 双轨是否真的开跑（`run_summary.json` 的时长证据）—— 任务卡与详情页共用。 */
+export async function dualTrackOf(taskRoot) {
+  return dualTrackStatus(
+    await readJsonSafe(join(taskRoot, 'expert_evidence', 'run_summary.json')))
+}
+
+/**
+ * B/R/U 校准摘要。
+ *
+ * 必须同时认**两种真实存在的写法**：
+ *   · 嵌套式：`expert_annotation.score_contract.{metric,direction,baseline.raw_value,...}`
+ *     + `comparison_summary.statistics.{baseline_mean,...}`（脚手架与本项目自产）
+ *   · 扁平式：`expert_annotation.metric_name / metric_direction / anchors.{B_mean,U}`
+ *     + `comparison_summary.{U,B_mean,R_mean,sigma_B,Delta}`（专家手写标注，实测 AutoRe0566）
+ * 早期只认前者，于是专家手写的真实标注在工作台上**整块显示为空** —— 数据都在，
+ * 只是字段名对不上。
+ */
+export async function calibrationDigest(taskRoot) {
   const annotation = await readJsonSafe(join(taskRoot, 'expert_evidence', 'expert_annotation.json'))
   const comparison = await readJsonSafe(join(taskRoot, 'optimization_evidence', 'comparison_summary.json'))
   const contract = annotation?.score_contract ?? null
   const stats = comparison?.statistics ?? null
-  const metric = contract?.metric ?? comparison?.metric?.name ?? null
+  const anchors = annotation?.anchors ?? null
+  const first = (...values) => values.find((value) => value !== undefined && value !== null) ?? null
   return {
-    metric,
-    direction: contract?.direction ?? comparison?.metric?.direction ?? null,
-    baseline: contract?.baseline?.raw_value ?? stats?.baseline_mean ?? null,
-    reference: contract?.reference?.raw_value ?? stats?.reference_mean ?? null,
-    upper: contract?.upper_bound?.raw_value ?? null,
-    pairedRuns: stats?.paired_run_count ?? null,
-    sigmaMultiple: stats?.baseline_sigma_multiple ?? null,
+    metric: first(contract?.metric, annotation?.metric_name, comparison?.metric?.name),
+    direction: first(contract?.direction, annotation?.metric_direction, comparison?.metric?.direction),
+    baseline: first(contract?.baseline?.raw_value, stats?.baseline_mean, anchors?.B_mean, comparison?.B_mean),
+    reference: first(contract?.reference?.raw_value, stats?.reference_mean, comparison?.R_mean),
+    upper: first(contract?.upper_bound?.raw_value, anchors?.U, comparison?.U),
+    // 统计量：嵌套式在 statistics 下，扁平式直接在顶层。
+    pairedRuns: first(stats?.paired_run_count, comparison?.n_baseline_expected),
+    sigmaMultiple: first(stats?.baseline_sigma_multiple, comparison?.sigma_B),
+    // 如实暴露「还没跑」：anchors.calibration_status 与 status 都是真实状态标记。
+    calibrationStatus: first(anchors?.calibration_status, comparison?.status),
   }
 }
 
@@ -224,6 +297,7 @@ async function buildTaskCard(taskRoot) {
     card.missingRequiredCount = missing.length
     card.remote = await remoteDigest(taskRoot)
     card.trajectory = await trajectoryDigest(taskRoot)
+    card.dualTrack = await dualTrackOf(taskRoot)
     card.calibration = await calibrationDigest(taskRoot)
     card.dualQaVerdict = (await readJsonSafe(join(taskRoot, 'expert_evidence', 'dual-qa', 'run-manifest.json')))?.verdict ?? null
     card.stateModified = stateModified
@@ -274,7 +348,9 @@ export function apply(ctx, rawConfig) {
         } catch {
           return errorResponse('请求体不是合法 JSON', 400)
         }
-        const roots = await readRegistry(defaultRoot)
+        const registry = await readRegistryOrError(defaultRoot)
+        if (registry.error !== undefined) return registry.error
+        const roots = registry.roots
         const action = body?.action
         if (action === 'add') {
           const candidate = typeof body.path === 'string' && isAbsolute(body.path)
@@ -318,7 +394,9 @@ export function apply(ctx, rawConfig) {
         return jsonResponse({ scanRoot: absolute, candidates: candidates.sort() })
       }
 
-      const roots = await readRegistry(defaultRoot)
+      const registry = await readRegistryOrError(defaultRoot)
+      if (registry.error !== undefined) return registry.error
+      const roots = registry.roots
       const cards = []
       for (const root of roots) cards.push(await buildTaskCard(root))
       return jsonResponse({
@@ -537,26 +615,69 @@ export function apply(ctx, rawConfig) {
             fields: TRAJECTORY_FIELDS,
             rounds: [],
             stats: null,
+            calibrationFlags: {},
+            dualTrack: dualTrackStatus(
+              await readJsonSafe(join(taskRoot, 'expert_evidence', 'run_summary.json'))),
             note: '轨迹文件尚未创建',
           })
         }
         return errorResponse(`轨迹文件不是合法 JSON：${error.message}`, 500)
       }
       const rounds = Array.isArray(document.rounds) ? document.rounds : []
-      const best = rounds.filter((round) => round.retained_best === true)
-      const scored = rounds.filter((round) => typeof round.score === 'number')
+
+      // ── 判据统一走 lib/trajectory.js（唯一真源）──────────────────────────
+      //
+      // 这里此前有三处各写一遍、各错各的：
+      //   · bestScore 用 Math.max，不看指标方向 —— minimize 题会把最差一轮报成最佳；
+      //   · failed 用 `status !== 'ok'`，把 blocked_no_compute / *_no_run 这类
+      //     **诚实标注**的状态一律染成「失败」，实测 AutoRe1852 显示 13/13 全失败；
+      //   · 没有区分「标定常数」与「本轮得分」，于是把 reference_normalized
+      //     填进 score 的轮次看起来像"已有最佳分"。
+      const direction = await metricDirectionOf(taskRoot)
+      const summary = summarizeRounds(rounds, direction)
+
+      // 标定常数：识别 score 里其实是 R 归一化值的轮次（只陈述事实，不改数）。
+      const constants = calibrationConstantsOf({
+        anchors: await readJsonSafe(join(taskRoot, 'workspace', 'harbor_task', 'tests', 'hidden_assets', 'anchors.json')),
+        comparison: await readJsonSafe(join(taskRoot, 'optimization_evidence', 'comparison_summary.json')),
+        annotation: await readJsonSafe(join(taskRoot, 'expert_evidence', 'expert_annotation.json')),
+      })
+      const calibrationFlags = {}
+      for (const round of rounds) {
+        const hit = detectCalibrationScore(round?.score, constants)
+        if (hit !== null) calibrationFlags[round.round] = hit.label
+      }
+      // 所有「出分」轮次其实都是标定常数 ⇒ 该轨**从未产出真实得分**。
+      // 必须显式标出：否则「最佳分 0.793603」会被读成"这轨跑出成绩了"。
+      // 实测 AutoRe1841 的 3 个出分轮次全是同一个 reference_normalized。
+      const scoredRounds = rounds.filter((round) => Number.isFinite(round?.score))
+      const calibrationOnly = scoredRounds.length > 0
+        && scoredRounds.every((round) => calibrationFlags[round.round] !== undefined)
+
+      // 双轨是否真的开跑 —— 轨迹文件存在 ≠ 双轨跑过（出题过程也会记轮次）。
+      const dualTrack = dualTrackStatus(
+        await readJsonSafe(join(taskRoot, 'expert_evidence', 'run_summary.json')))
+
       return jsonResponse({
         track,
         fields: TRAJECTORY_FIELDS,
         rounds,
         stats: {
-          total: rounds.length,
-          scored: scored.length,
-          failed: rounds.filter((round) => round.status !== 'ok').length,
-          bestCount: best.length,
-          latestScore: scored.length > 0 ? scored[scored.length - 1].score : null,
-          bestScore: scored.length > 0 ? Math.max(...scored.map((round) => round.score)) : null,
+          total: summary.total,
+          scored: summary.scored,
+          // 保留 failed 字段名（前端已用），但语义改为「明确失败」；
+          // 诚实状态归入 noScore，并把原始 status 分布原样透出。
+          failed: summary.failed,
+          noScore: summary.noScore,
+          bestCount: summary.bestCount,
+          latestScore: summary.latestScore,
+          bestScore: summary.bestScore,
+          direction: summary.direction,
+          statusKinds: summary.statusKinds,
         },
+        calibrationFlags,
+        calibrationOnly,
+        dualTrack,
       })
     },
   }), 'autoresearch-ui: trajectory route')
@@ -646,7 +767,9 @@ export function apply(ctx, rawConfig) {
       // ?all=1：跨任务聚合 —— 每个注册任务各自的账本与快照。
       if (parameters.get('all') === '1') {
         const defaultRoot = resolveRoot()
-        const roots = await readRegistry(defaultRoot)
+        const registry = await readRegistryOrError(defaultRoot)
+        if (registry.error !== undefined) return registry.error
+        const roots = registry.roots
         const tasks = []
         for (const root of roots) {
           const book = await readJsonSafe(join(root, '.autoresearch-remote', 'ledger.json'))

@@ -20,6 +20,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readFile, writeFile, mkdir, stat, access } from 'node:fs/promises'
 import { join, dirname, resolve, isAbsolute, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import {
   QaRunnerError, REQUIRED_SKILL, validateLanes, runDualQa, auditConsensus, sha256File,
 } from './lib/runner.js'
@@ -36,6 +37,30 @@ export const name = 'autoresearch-qa'
 export const inject = ['tools']
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * dsh 入口与桌面补丁层的解析。
+ *
+ * 不能用路径算术（`resolve(HERE,'..','..')` 再拼 `node_modules/@deepseek-ai/dsh`）：
+ * 那个表达式只在「从源码仓库运行」时成立。装进 profile 后本包位于
+ * `<DSH_HOME>/profiles/<name>/node_modules/dsh-autoresearch-qa`，往上两级是
+ * **profile 目录**，那里既没有 `node_modules/@deepseek-ai` 也没有 `build/` ——
+ * 实测双路质检因此恒返回 BLOCKED，两个工具在装好的应用里都跑不起来。
+ *
+ * Node 的模块解析在两种布局下都正确：仓库里命中仓库根的 `node_modules`，
+ * profile 里向上走同样能命中（profile 的 node_modules 只放本项目包，
+ * `@deepseek-ai/*` 由仓库根提供）。
+ */
+const requireFromHere = createRequire(import.meta.url)
+
+/** dsh 入口；解析不到返回 null（调用方如实报不可用）。 */
+function resolveDshEntry() {
+  try {
+    return requireFromHere.resolve('@deepseek-ai/dsh/lib/bin.js')
+  } catch {
+    return null
+  }
+}
 
 /** DSH_HOME：与桌面壳、安装脚本、UI 插件同一规则。 */
 function dshHome() {
@@ -73,7 +98,6 @@ async function exists(path) {
 
 export function apply(ctx, rawConfig) {
   const config = { ...DEFAULT_CONFIG, ...(rawConfig ?? {}) }
-  const projectRoot = resolve(HERE, '..', '..')
   const resolveRoot = () => {
     const raw = config.taskRoot
     if (raw === '.' || raw === '' || raw === undefined) return process.cwd()
@@ -260,9 +284,9 @@ export function apply(ctx, rawConfig) {
         .filter((l) => l.credentialEnv === null || l.apiKey === null)
         .map((l) => `${l.role}/${l.route}/${l.model}`)
 
-      const dshEntry = join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-      if (!await exists(dshEntry)) {
-        return { ok: false, problems: [`dsh 入口不存在：${dshEntry}`] }
+      const dshEntry = resolveDshEntry()
+      if (dshEntry === null || !await exists(dshEntry)) {
+        return { ok: false, problems: [`dsh 入口不存在：${dshEntry ?? '@deepseek-ai/dsh/lib/bin.js 解析失败'}`] }
       }
 
       const outRoot = args.outDir !== undefined
@@ -471,12 +495,13 @@ export function apply(ctx, rawConfig) {
         }
       }
 
-      const dshEntryPath = join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-      if (!await exists(dshEntryPath)) {
+      const dshEntryPath = resolveDshEntry()
+      if (dshEntryPath === null || !await exists(dshEntryPath)) {
+        const detail = dshEntryPath ?? '@deepseek-ai/dsh/lib/bin.js 解析失败（请先执行 npm install）'
         return {
           verdict: 'BLOCKED',
-          problems: [`未找到 dsh 入口：${dshEntryPath}`],
-          report: `未找到 dsh 入口：${dshEntryPath}；请先在项目根执行 npm install。`,
+          problems: [`未找到 dsh 入口：${detail}`],
+          report: `未找到 dsh 入口：${detail}；请先在项目根执行 npm install。`,
         }
       }
 
@@ -493,6 +518,13 @@ export function apply(ctx, rawConfig) {
         await writeFile(archived, await readFile(manifestPath, 'utf8'), 'utf8')
       }
 
+      // 桌面补丁层可选：它当前是一份空补丁（顶层 `[]`，全部条目注释掉），
+      // 传不传对 headless 车道没有区别。而装进 profile 后仓库的 build/ 不可达，
+      // 硬拼路径只会让 harness 因「--patch 文件不存在」拒绝启动。
+      // 因此只在它真实存在时才传。
+      const candidatePatch = resolve(HERE, '..', '..', 'build', 'autoresearch.patch.yml')
+      const basePatchPath = await exists(candidatePatch) ? candidatePatch : undefined
+
       const logs = []
       let result
       try {
@@ -502,7 +534,7 @@ export function apply(ctx, rawConfig) {
           workRoot,
           dshEntryPath,
           profile: config.profile,
-          basePatchPath: join(projectRoot, 'build', 'autoresearch.patch.yml'),
+          basePatchPath,
           skillName: config.skillName,
           reviewScript,
           consensusScript,
