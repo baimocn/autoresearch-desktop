@@ -18,7 +18,7 @@
     "syntax:guard": "node scripts/syntax-guard.mjs",
     "check:ui-tokens": "node scripts/check-ui-tokens.mjs",
     "check:init-root": "node scripts/check-init-root-drift.mjs",
-    "check": "node scripts/syntax-guard.mjs && node scripts/selftest-installed.mjs && node scripts/tool-registry-guard.mjs && node scripts/check-ui-tokens.mjs && node scripts/selftest.mjs && node scripts/selftest-feasibility-direction.mjs && node scripts/selftest-trajectory.mjs && node scripts/selftest-pack-verify.mjs && node scripts/selftest-remote.mjs && node scripts/selftest-api.mjs && node scripts/ablation-mode.mjs && node scripts/ablation-gates.mjs && node scripts/ablation-upstream.mjs && node scripts/ablation-selfreview.mjs && node scripts/ablation-deliberation.mjs && node scripts/ablation-council.mjs && node scripts/ablation-redlines.mjs && node scripts/check-gate-wiring.mjs && node scripts/check-init-root-drift.mjs && node scripts/upstream-baseline.mjs && node scripts/verify-integration.mjs",
+    "check": "node scripts/syntax-guard.mjs && node scripts/selftest-installed.mjs && node scripts/tool-registry-guard.mjs && node scripts/selftest-integrations.mjs && node scripts/check-ui-tokens.mjs && node scripts/selftest.mjs && node scripts/selftest-feasibility-direction.mjs && node scripts/selftest-trajectory.mjs && node scripts/selftest-pack-verify.mjs && node scripts/selftest-task-fingerprint.mjs && node scripts/selftest-format-repair.mjs && node scripts/selftest-remote.mjs && node scripts/selftest-api.mjs && node scripts/ablation-mode.mjs && node scripts/ablation-gates.mjs && node scripts/ablation-upstream.mjs && node scripts/ablation-selfreview.mjs && node scripts/ablation-deliberation.mjs && node scripts/ablation-council.mjs && node scripts/ablation-redlines.mjs && node scripts/check-gate-wiring.mjs && node scripts/check-init-root-drift.mjs && node scripts/upstream-baseline.mjs && node scripts/verify-integration.mjs",
     "selftest:remote": "node scripts/selftest-remote.mjs",
     "selftest:feasibility": "node scripts/selftest-feasibility-direction.mjs",
     "selftest:trajectory": "node scripts/selftest-trajectory.mjs",
@@ -36,7 +36,9 @@
     "upstream:accept": "node scripts/upstream-baseline.mjs --write",
     "desktop": "electron .",
     "sessions:repair": "python scripts/repair-session-ids.py",
-    "workbench": "node scripts/start-workbench.mjs"
+    "workbench": "node scripts/start-workbench.mjs",
+    "selftest:fingerprint": "node scripts/selftest-task-fingerprint.mjs",
+    "selftest:format-repair": "node scripts/selftest-format-repair.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.2.0-rc.2",

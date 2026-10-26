@@ -30,6 +30,9 @@ const PACKAGES = [
   'dsh-autoresearch-qa',
   'dsh-autoresearch-remote',
   'dsh-autoresearch-api',
+  // AutoDL 算力与飞书集成：独立外部通道，排在 remote/api 之后、UI 之前。
+  'dsh-autoresearch-autodl',
+  'dsh-autoresearch-lark',
   // 模型议会是**独立工作台**：自己的面板、自己的路由前缀、自己的配置文件，
   // 与 dsh-autoresearch-ui 不共用任何东西 —— 所以它不依赖 UI 包的顺序。
   'dsh-model-council',

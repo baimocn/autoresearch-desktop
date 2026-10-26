@@ -1,0 +1,21 @@
+# 飞书集成层。
+#
+# 凭据不在配置里 —— @larksuite/cli 自带授权（lark-cli auth login），DPoP 密钥
+# 走 Windows 平台 KSP。这里只放三表路由与通知目标。
+#
+# 首次使用：
+#   1. autoresearch_lark_provision 建三表 Base，拿到 baseToken 与各表 id
+#   2. 写进 .dsh-home/.lark.json（该目录已被 gitignore）：
+#      { "baseToken": "...", "tables": {"tasks":{"id":"tbl.."},...}, "chatId": "oc_..." }
+#   3. autoresearch_lark_sync 即可工作
+- insert:
+    - id: autoresearch-lark
+      name: dsh-autoresearch-lark
+      config:
+        baseToken: null
+        tables: null
+        # 通知目标群。留空则 notify 工具只提示如何配置，不发送。
+        chatId: null
+        # 飞书不可达是否阻塞主流程。false = 同步失败只记录，不挡出题。
+        strict: false
+        timeoutMs: 60000

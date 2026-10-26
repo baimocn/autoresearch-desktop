@@ -1,5 +1,12 @@
 # 使用指南
 
+## 算力与飞书（2026-10-27 新增）
+
+`autoresearch_autodl_account` 等 14 个工具接 AutoDL（查余额/实例/镜像、带预算护栏的全自动开关机与回收）；
+`autoresearch_lark_sync` 等 6 个工具接飞书（题包状态/门禁/轨迹三表同步、群通知）。
+详见 [docs/integrations.md](integrations.md)。首次使用把 AutoDL token 写进
+`.dsh-home/.autodl.json`、飞书三表配置写进 `.dsh-home/.lark.json`（均已被 gitignore）。
+
 ## 1. 开始一道题
 
 打开工作台，在会话里让模型：

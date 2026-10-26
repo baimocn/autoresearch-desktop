@@ -10,6 +10,8 @@ const packages = [
   'dsh-autoresearch-qa',
   'dsh-autoresearch-remote',
   'dsh-autoresearch-api',
+  'dsh-autoresearch-autodl',
+  'dsh-autoresearch-lark',
 ]
 
 const registered = []

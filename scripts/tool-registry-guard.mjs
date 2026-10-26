@@ -138,6 +138,17 @@ const EXPECTED = {
     'autoresearch_remote_probe_job', 'autoresearch_remote_snapshot', 'autoresearch_remote_status',
     'autoresearch_remote_exec',
   ],
+  'dsh-autoresearch-autodl': [
+    'autoresearch_autodl_account', 'autoresearch_autodl_instances', 'autoresearch_autodl_specs',
+    'autoresearch_autodl_images', 'autoresearch_autodl_snapshot', 'autoresearch_autodl_leases',
+    'autoresearch_autodl_estimate', 'autoresearch_autodl_reconcile', 'autoresearch_autodl_reap',
+    'autoresearch_autodl_create', 'autoresearch_autodl_power', 'autoresearch_autodl_release',
+    'autoresearch_autodl_save_image', 'autoresearch_autodl_cost',
+  ],
+  'dsh-autoresearch-lark': [
+    'autoresearch_lark_status', 'autoresearch_lark_provision', 'autoresearch_lark_sync',
+    'autoresearch_lark_records', 'autoresearch_lark_notify', 'autoresearch_lark_raw',
+  ],
   // 模型议会：把议会接入普通会话的两个工具（模式未开时调用会被拒绝）。
   'dsh-model-council': ['council_convene', 'council_read'],
 }

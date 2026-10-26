@@ -1,0 +1,21 @@
+# AutoDL 算力接入。
+#
+# token 不在这里配置 —— 走环境变量 AUTODL_TOKEN，或 .dsh-home/.autodl.json
+# （该目录已被 gitignore）。配置里只放策略与护栏。
+- insert:
+    - id: autoresearch-autodl
+      name: dsh-autoresearch-autodl
+      config:
+        # 租约账本。默认写到 cwd 下的 .autodl-leases.json —— 放在任务根之外
+        # 可避免被误提交；需要留痕时显式改成任务内的路径。
+        leaseFile: '.autodl-leases.json'
+        defaultGpuSpec: 'v-48g'
+        defaultCudaVersion: 113
+        # 预算护栏：单次创建预估超过 20 元即拒绝。
+        maxTotalYuan: 20
+        # 单价留空：官方文档未写 payg_price 的计费时长单位，
+        # 不猜一个数字当默认值。使用前请按自己的账单口径填（元/小时）。
+        pricePerHourYuan: null
+        # 回收默认只关机（保留磁盘）。改成 release 会删数据，务必确认。
+        reapMode: 'stop'
+        timeoutMs: 30000

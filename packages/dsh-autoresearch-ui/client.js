@@ -1514,6 +1514,8 @@ window.__ModuleLoader__.load({
     const TABS = [
       ['tasks', '任务组合'],
       ...TAB_GROUPS.flatMap((group) => group.tabs),
+      ['autodl', '算力'],
+      ['lark', '飞书'],
       ['api', 'API 配置'],
     ]
 
@@ -1547,6 +1549,185 @@ window.__ModuleLoader__.load({
                 h(Badge, { tone: 'idle', dot: false }, entry.milestone),
                 verdictBadge(recorded?.verdict ?? null))
             }))))
+    }
+
+    /* ── AutoDL 算力视图 ────────────────────────────────────────────────────
+     *
+     * 只读为主：余额、实例、租约、护栏。开机/关机在这里给按钮（关机不花钱，
+     * 且面板看得见跑着什么），**创建与释放不给按钮** —— 它们涉及真实计费与
+     * 不可恢复删除，留在对话工具里走显式 confirm。这是面板与工具的职责分界。
+     */
+    function AutodlView() {
+      const data = useApi('/autodl')
+      const [busy, setBusy] = React.useState('')
+      const [notice, setNotice] = React.useState(null)
+
+      if (data.loading) return h('div', { className: 'aw-panel' }, h('p', null, '读取 AutoDL 状态…'))
+      if (data.error) return h('div', { className: 'aw-panel' }, h('p', { style: { color: 'var(--aw-bad)' } }, data.error))
+      if (data.data?.configured === false) {
+        return h('div', { className: 'aw-panel' },
+          h(Section, { title: 'AutoDL 算力', subtitle: '尚未配置' }),
+          h('p', null, data.data.hint))
+      }
+      const { balance, instances, leases, guards, error } = data.data ?? {}
+      if (error !== undefined) {
+        return h('div', { className: 'aw-panel' },
+          h(Section, { title: 'AutoDL 算力' }),
+          h('p', { style: { color: 'var(--aw-bad)' } }, `读取失败：${error}`))
+      }
+
+      const act = async (payload, label) => {
+        setBusy(label)
+        try {
+          const response = await apiPost('/autodl', payload)
+          setNotice(`${label}：${response.error ? `失败 — ${response.error}` : '已完成'}`)
+          data.reload()
+        } catch (error) {
+          setNotice(`${label}：失败 — ${error.message}`)
+        } finally { setBusy('') }
+      }
+
+      return h('div', { className: 'aw-panel' },
+        h(Section, {
+          title: 'AutoDL 算力',
+          subtitle: '专家探索 / 预跑用（AutoDL 上的卡型不参与内场 QA15 约束）',
+          right: h('button', {
+            type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+            onClick: () => data.reload(),
+          }, '刷新'),
+        }),
+        notice ? h('p', null, notice) : null,
+
+        h('div', { className: 'aw-cards' },
+          h('div', { className: 'aw-card' },
+            h('h4', null, '余额'),
+            h('p', { className: 'aw-mono' }, `${balance?.assets ?? '—'} 元`),
+            h('p', null, `累计消费 ${balance?.accumulate ?? '—'} 元`)),
+          h('div', { className: 'aw-card' },
+            h('h4', null, '实例'),
+            h('p', { className: 'aw-mono' }, `${instances?.page?.total ?? 0} 台`),
+            h('p', null, `运行中 ${(instances?.instances ?? []).filter((i) => i.status === 'running').length} 台`)),
+          h('div', { className: 'aw-card' },
+            h('h4', null, '护栏'),
+            h('p', { className: 'aw-mono' }, `单次上限 ${guards?.maxTotalYuan ?? '—'} 元`),
+            h('p', null, `回收模式 ${guards?.reapMode ?? '—'}`))),
+
+        h(Section, { title: '实例' }),
+        (instances?.instances ?? []).length === 0
+          ? h('p', null, '当前没有实例（不产生算力费用）')
+          : h('table', { className: 'aw-table' },
+            h('thead', null, h('tr', null,
+              ['名称', '状态', 'GPU', '区域', '到期', ''].map((c) => h('th', { key: c }, c)))),
+            h('tbody', null, instances.instances.map((inst) => h('tr', { key: inst.uuid },
+              h('td', null, inst.name ?? inst.uuid),
+              h('td', null, inst.status ?? '—'),
+              h('td', null, `${inst.gpuSpecUuid ?? '—'} × ${inst.gpuAmount ?? '?'}`),
+              h('td', null, inst.regionName ?? inst.regionSign ?? '—'),
+              h('td', null, inst.expiredAt ?? inst.timedShutdownAt ?? '—'),
+              h('td', null, inst.status === 'running'
+                ? h('button', {
+                  type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+                  onClick: () => act({ action: 'power', instance_uuid: inst.uuid, direction: 'off' }, `关机 ${inst.name ?? inst.uuid}`),
+                }, '关机')
+                : h('button', {
+                  type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+                  onClick: () => act({ action: 'power', instance_uuid: inst.uuid, direction: 'on' }, `开机 ${inst.name ?? inst.uuid}`),
+                }, '开机')))))),
+
+        h(Section, { title: '租约与回收' }),
+        h('p', null, `账本内 ${leases?.total ?? 0} 条租约，超期 ${leases?.expired?.length ?? 0} 条。`
+          + '自动回收默认只关机（保留磁盘）；释放会删数据，走对话工具显式确认。'),
+        h('div', { style: { display: 'flex', gap: 8 } },
+          h('button', {
+            type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+            onClick: () => act({ action: 'reap', dry_run: true }, '回收预演'),
+          }, '预演回收'),
+          h('button', {
+            type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+            onClick: () => act({ action: 'reap' }, '回收超期'),
+          }, '回收超期实例'),
+          h('button', {
+            type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+            onClick: () => act({ action: 'reconcile' }, '核对账本'),
+          }, '核对账本与云端')),
+
+        (leases?.expired ?? []).length > 0
+          ? h('ul', null, leases.expired.map((l) => h('li', { key: l.id },
+            `${l.label ?? l.instanceUuid ?? l.id}：${l.estimatedYuan ?? '?'} 元，到期 ${l.expiresAt}`)))
+          : null)
+    }
+
+    /* ── 飞书集成视图 ─────────────────────────────────────────────────────── */
+    function LarkView({ task }) {
+      const data = useApi('/lark')
+      const [busy, setBusy] = React.useState('')
+      const [notice, setNotice] = React.useState(null)
+
+      if (data.loading) return h('div', { className: 'aw-panel' }, h('p', null, '读取飞书状态…'))
+      if (data.error) return h('div', { className: 'aw-panel' }, h('p', { style: { color: 'var(--aw-bad)' } }, data.error))
+      const { auth, configured, tables, baseToken } = data.data ?? {}
+
+      const sync = async () => {
+        if (task === null) { setNotice('先在任务组合里选择一个任务，再同步'); return }
+        setBusy('sync')
+        try {
+          const response = await apiPost('/lark', { action: 'sync', task_root: task })
+          setNotice(`同步：${response.error ? `失败 — ${response.error}` : JSON.stringify(response.written ?? response)}`)
+        } catch (error) { setNotice(`同步：失败 — ${error.message}`) } finally { setBusy('') }
+      }
+      const provision = async () => {
+        setBusy('provision')
+        try {
+          const response = await apiPost('/lark', { action: 'provision', name: 'AutoResearch 平台' })
+          const token = response?.baseToken ?? null
+          setNotice(token === null
+            ? '已预演请求（dry-run 模式下不会真的创建）'
+            : `Base 已创建：${token}。把该 token 与各表 id 写进 .dsh-home/.lark.json 后刷新。`
+            + (response.url ? ` 地址：${response.url}` : ''))
+        } catch (error) { setNotice(`建表：失败 — ${error.message}`) } finally { setBusy('') }
+      }
+
+      return h('div', { className: 'aw-panel' },
+        h(Section, {
+          title: '飞书集成',
+          subtitle: '题包状态 / 门禁结论 / 双轨轨迹 → 多维表格三表',
+          right: h('button', {
+            type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+            onClick: () => data.reload(),
+          }, '刷新'),
+        }),
+        notice ? h('p', null, notice) : null,
+
+        h('div', { className: 'aw-cards' },
+          h('div', { className: 'aw-card' },
+            h('h4', null, '授权'),
+            h('p', { className: 'aw-mono' }, auth?.bot ?? '—'),
+            h('p', null, `${auth?.appId ?? '—'}${auth?.usable ? '（可用）' : '（不可用，需 lark-cli auth login）'}`)),
+          h('div', { className: 'aw-card' },
+            h('h4', null, '三表'),
+            h('p', { className: 'aw-mono' }, configured ? '已配置' : '未配置'),
+            h('p', null, configured ? `${(tables ?? []).length} 张表` : '先建 Base')),
+          h('div', { className: 'aw-card' },
+            h('h4', null, '当前任务'),
+            h('p', { className: 'aw-mono' }, task === null ? '未选择' : task.split(/[\\/]/).pop()),
+            h('p', null, task === null ? '同步需要先绑定任务' : '可同步'))),
+
+        h('div', { style: { display: 'flex', gap: 8 } },
+          h('button', {
+            type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '',
+            onClick: provision,
+          }, configured ? '再建一个 Base' : '创建三表 Base'),
+          h('button', {
+            type: 'button', className: 'aw-btn aw-btn-xs', disabled: busy !== '' || task === null,
+            onClick: sync,
+          }, '同步当前任务到三表')),
+
+        configured && (tables ?? []).length > 0
+          ? h(React.Fragment, null,
+            h(Section, { title: '表清单' }),
+            h('ul', null, tables.map((t) => h('li', { key: t.id ?? t.name },
+              `${t.name ?? '(未命名)'}${t.id ? ` — ${t.id}` : ''}`))))
+          : h('p', null, '尚未配置 baseToken：点「创建三表 Base」后，把返回的 token 与表 id 写进 .dsh-home/.lark.json（该目录已被 gitignore，不会进 git）。'))
     }
 
     function Panel() {
@@ -1659,6 +1840,18 @@ window.__ModuleLoader__.load({
             'aria-current': tab === 'api' ? 'page' : undefined,
             onClick: () => setTab('api'),
           }, 'API 配置')),
+          h('button', {
+            key: 'autodl', type: 'button', className: 'aw-tab',
+            'data-on': tab === 'autodl' ? '1' : '0',
+            'aria-current': tab === 'autodl' ? 'page' : undefined,
+            onClick: () => setTab('autodl'),
+          }, '算力'),
+          h('button', {
+            key: 'lark', type: 'button', className: 'aw-tab',
+            'data-on': tab === 'lark' ? '1' : '0',
+            'aria-current': tab === 'lark' ? 'page' : undefined,
+            onClick: () => setTab('lark'),
+          }, '飞书'),
 
         // 内容区包一层：接受跳转链接的焦点，并承载统一的内边距与过渡。
         h('main', {
@@ -1667,6 +1860,8 @@ window.__ModuleLoader__.load({
         },
           tab === 'tasks' ? h(TasksView, { key: `tasks-${refreshKey}`, onOpen: openTask }) : null,
           tab === 'api' ? h(ApiView, { onChanged: () => setConfigVersion((value) => value + 1) }) : null,
+          tab === 'autodl' ? h(AutodlView) : null,
+          tab === 'lark' ? h(LarkView, { task }) : null,
 
           needsTask
             ? h(TaskPicker, {

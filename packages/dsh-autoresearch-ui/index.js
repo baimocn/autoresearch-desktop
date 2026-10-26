@@ -38,6 +38,23 @@ import {
   validateApiDeclaration, normalizeDeclaration, probeEndpoint,
   writeCredentialRefs, readCredentialRefs, SUPPORTED_PROTOCOLS,
 } from 'dsh-autoresearch-api/lib/providers.js'
+import {
+  readBalance, listInstances, listImages, readSnapshot,
+  GPU_SPECS, powerOn, powerOff,
+} from 'dsh-autoresearch-autodl/lib/client.js'
+import {
+  readLeases, expiredLeases, estimateCost, reapExpiredLeases, reconcileLeases,
+} from 'dsh-autoresearch-autodl/lib/automation.js'
+import {
+  leaseFilePath, normalizeAutodlConfig, resolveAutodlToken,
+} from 'dsh-autoresearch-autodl/lib/config.js'
+import {
+  authStatus, listTables, listRecords, sendMessage,
+} from 'dsh-autoresearch-lark/lib/cli.js'
+import {
+  provisionBase, syncTaskPackage, TABLE_SCHEMAS,
+} from 'dsh-autoresearch-lark/lib/sync.js'
+import { larkConfigPaths, normalizeLarkConfig } from 'dsh-autoresearch-lark/lib/config.js'
 
 export const name = 'autoresearch-ui'
 
@@ -54,6 +71,71 @@ const DEFAULT_CONFIG = Object.freeze({
 })
 
 const API_PREFIX = '/api/autoresearch'
+
+/**
+ * 飞书三表解析：显式配置的表 id 优先，否则按表名在 Base 里查。
+ *
+ * 与 lark 包工具入口的 `loadTables` 同一规则 —— 两处实现如果漂移，
+ * 会出现「工具同步成功、面板读不到」这种最难排查的错位。
+ */
+async function resolveLarkTables(config) {
+  if (config.tables?.tasks?.id) return config.tables
+  if (!config.baseToken) return null
+  const listed = await listTables({ baseToken: config.baseToken }, { timeoutMs: config.timeoutMs })
+  const find = (name) => listed.tables.find((t) => t.name === name)?.id ?? null
+  return {
+    tasks: { id: find('任务') },
+    gates: { id: find('门禁') },
+    trajectories: { id: find('轨迹') },
+  }
+}
+
+/** 从题包根读出三表行（与 lark 包工具入口同一读取口径）。 */
+async function buildLarkRows(taskRoot) {
+  const rows = { task: null, gates: [], trajectories: [] }
+  if (typeof taskRoot !== 'string' || taskRoot === '') return rows
+  const readJson = async (p) => {
+    try { return JSON.parse(await readFile(p, 'utf8')) } catch { return undefined }
+  }
+  const state = await readJson(join(taskRoot, 'autoresearch-state.json'))
+  const taskId = state?.taskId ?? taskRoot.split(/[\\/]/).pop()
+  if (state) {
+    const blocking = (state.checks ?? []).filter((c) => c.status === 'FAIL').map((c) => c.id)
+    rows.task = {
+      任务ID: taskId,
+      任务名: state.taskName ?? null,
+      阶段: state.phase ?? null,
+      状态: blocking.length > 0 ? '阻塞' : (state.phase === 'done' ? '已完成' : '进行中'),
+      阻塞门禁: blocking.join(',') || null,
+      指标名: state.metric?.name ?? null,
+      方向: state.metric?.direction ?? null,
+      '算力成本(元)': state.autodl?.costYuan ?? null,
+      备注: state.note ?? null,
+    }
+    for (const check of state.checks ?? []) {
+      rows.gates.push({
+        任务ID: taskId,
+        门禁: check.id,
+        结论: check.status === 'FAIL' ? 'REJECT' : (check.status === 'UNKNOWN' ? 'NEEDS_EVIDENCE' : 'RECOMMEND'),
+        首条问题: check.detail ?? null,
+      })
+    }
+  }
+  const runSummary = await readJson(join(taskRoot, 'expert_evidence', 'run_summary.json'))
+  for (const track of runSummary?.agent_execution ?? []) {
+    rows.trajectories.push({
+      任务ID: taskId,
+      轨道: track.track === 'trajectory_seed' ? 'seed' : 'codex',
+      轮数: track.trajectory_rounds ?? track.effective_rounds ?? null,
+      出分轮数: track.scored_rounds ?? null,
+      失败轮数: track.failed_rounds ?? null,
+      最佳分: track.best_score ?? null,
+      '有效时长(h)': track.duration_hours ?? null,
+      状态: track.threshold_pass === true ? '达标' : '未达标',
+    })
+  }
+  return rows
+}
 
 /** 视图允许浏览的目录白名单（相对任务根）。 */
 const VIEWABLE_ROOTS = [
@@ -1230,6 +1312,186 @@ export function apply(ctx, rawConfig) {
       })
     },
   }), 'autoresearch-ui: mode route')
+
+  // ── 路由：AutoDL 算力面板 ─────────────────────────────────────────────────
+  //
+  // 直接调 autodl 包的 lib（不走工具层）：UI 是只读优先的视图，工具层的
+  // confirm/护栏语义属于对话流程；这里只暴露查询与「显式带 confirm」的写操作，
+  // 让面板能看到成本、实例与租约，而不会因为点一下就开机花钱。
+  ctx.effect(() => ctx.connection.fetch.register({
+    path: `${API_PREFIX}/autodl`,
+    methods: ['GET', 'POST'],
+    requestBody: 'buffered',
+    async fetch(request) {
+      const config = normalizeAutodlConfig()
+      const token = await resolveAutodlToken(config)
+      if (token === null) {
+        return jsonResponse({
+          configured: false,
+          hint: '未配置 AutoDL token。设环境变量 AUTODL_TOKEN，或写 .dsh-home/.autodl.json 的 {"token":"..."}',
+        })
+      }
+      const options = { token, timeoutMs: config.timeoutMs }
+
+      if (request.method === 'GET') {
+        const parameters = new URL(request.url).searchParams
+        const view = parameters.get('view') ?? 'overview'
+        try {
+          if (view === 'instances') return jsonResponse(await listInstances({ ...options, pageSize: 100 }))
+          if (view === 'images') return jsonResponse(await listImages({ ...options, pageSize: 50 }))
+          if (view === 'snapshot') {
+            const uuid = parameters.get('uuid') ?? ''
+            if (uuid === '') return errorResponse('缺少 uuid 参数', 400)
+            const snapshot = await readSnapshot(uuid, options)
+            // SSH 密码不回显 —— 只说明「已提供」，要复制请去 AutoDL 控制台。
+            const { rootPassword, ...rest } = snapshot
+            return jsonResponse({ ...rest, sshPasswordProvided: typeof rootPassword === 'string' && rootPassword !== '' })
+          }
+          const [balance, instances, leases] = await Promise.all([
+            readBalance(options),
+            listInstances({ ...options, pageSize: 100 }),
+            readLeases(leaseFilePath(config)),
+          ])
+          return jsonResponse({
+            configured: true,
+            balance,
+            instances,
+            leases: {
+              active: leases.leases.filter((l) => l.status === 'running' || l.status === 'stopped'),
+              expired: expiredLeases(leases),
+              total: leases.leases.length,
+            },
+            guards: {
+              maxTotalYuan: config.maxTotalYuan,
+              pricePerHourYuan: config.pricePerHourYuan,
+              reapMode: config.reapMode,
+            },
+            specs: GPU_SPECS,
+          })
+        } catch (error) {
+          return jsonResponse({ configured: true, error: error.message, code: error.code ?? null }, 502)
+        }
+      }
+
+      // POST：写操作。每个动作都自带护栏；创建/释放走对话工具（需显式 confirm）。
+      let body
+      try {
+        body = await request.json()
+      } catch {
+        return errorResponse('请求体不是合法 JSON', 400)
+      }
+      const action = body?.action
+      try {
+        if (action === 'estimate') {
+          return jsonResponse(estimateCost({
+            pricePerHourYuan: body?.price_per_hour_yuan ?? config.pricePerHourYuan,
+            hours: body?.hours, budget: { maxTotalYuan: body?.max_total_yuan ?? config.maxTotalYuan },
+          }))
+        }
+        if (action === 'reap') {
+          return jsonResponse(await reapExpiredLeases({
+            leaseFile: leaseFilePath(config), token: options.token,
+            mode: body?.mode ?? config.reapMode, dryRun: body?.dry_run === true,
+          }))
+        }
+        if (action === 'reconcile') {
+          return jsonResponse(await reconcileLeases({ leaseFile: leaseFilePath(config), token: options.token }))
+        }
+        if (action === 'power') {
+          if (body?.direction === 'on') {
+            return jsonResponse(await powerOn(body.instance_uuid, {}, options))
+          }
+          return jsonResponse(await powerOff(body.instance_uuid, options))
+        }
+        return errorResponse(`未知 action：${String(action)}（创建/释放走对话工具，需显式确认）`, 400)
+      } catch (error) {
+        return jsonResponse({ error: error.message }, 502)
+      }
+    },
+  }), 'autoresearch-ui: autodl route')
+
+  // ── 路由：飞书集成面板 ────────────────────────────────────────────────────
+  ctx.effect(() => ctx.connection.fetch.register({
+    path: `${API_PREFIX}/lark`,
+    methods: ['GET', 'POST'],
+    requestBody: 'buffered',
+    async fetch(request) {
+      const config = await normalizeLarkConfig()
+      const auth = await authStatus({ timeoutMs: config.timeoutMs })
+
+      if (request.method === 'GET') {
+        const parameters = new URL(request.url).searchParams
+        if (parameters.get('view') === 'records') {
+          const tableId = parameters.get('table_id') ?? ''
+          if (tableId === '' || !config.baseToken) {
+            return jsonResponse({ configured: Boolean(config.baseToken), auth, records: [] })
+          }
+          try {
+            return jsonResponse(await listRecords({
+              baseToken: config.baseToken, tableId, limit: Number(parameters.get('limit') ?? 20),
+            }, { timeoutMs: config.timeoutMs }))
+          } catch (error) {
+            return jsonResponse({ error: error.message }, 502)
+          }
+        }
+        let tables = null
+        if (config.baseToken) {
+          try {
+            tables = (await listTables({ baseToken: config.baseToken }, { timeoutMs: config.timeoutMs })).tables
+          } catch (error) {
+            tables = [{ name: `读取失败：${error.message}` }]
+          }
+        }
+        return jsonResponse({
+          configured: Boolean(config.baseToken),
+          auth,
+          baseToken: config.baseToken,
+          tables,
+          chatId: config.chatId,
+          schemas: TABLE_SCHEMAS,
+        })
+      }
+
+      let body
+      try {
+        body = await request.json()
+      } catch {
+        return errorResponse('请求体不是合法 JSON', 400)
+      }
+      const action = body?.action
+      try {
+        if (action === 'provision') {
+          return jsonResponse(await provisionBase({
+            name: body?.name ?? 'AutoResearch 平台', dryRun: body?.dry_run === true,
+          }, { timeoutMs: config.timeoutMs }))
+        }
+        if (action === 'sync') {
+          const tables = await resolveLarkTables(config)
+          const rows = await buildLarkRows(String(body?.task_root ?? ''))
+          if (!rows.task && rows.gates.length === 0 && rows.trajectories.length === 0) {
+            return jsonResponse({ synced: false, reason: '无可同步内容（缺 autoresearch-state.json / run_summary.json）' })
+          }
+          return jsonResponse(await syncTaskPackage({
+            baseToken: config.baseToken, tables,
+            task: rows.task ?? { 任务ID: String(body?.task_root ?? '').split(/[\\/]/).pop() },
+            gates: rows.gates, trajectories: rows.trajectories,
+            dryRun: body?.dry_run === true,
+          }, { timeoutMs: config.timeoutMs }))
+        }
+        if (action === 'notify') {
+          const chatId = body?.chat_id ?? config.chatId
+          if (!chatId) return errorResponse('未配置飞书群 chat_id', 400)
+          return jsonResponse(await sendMessage({
+            chatId, text: body?.text, markdown: body?.markdown,
+            dryRun: body?.dry_run === true,
+          }, { timeoutMs: config.timeoutMs }))
+        }
+        return errorResponse(`未知 action：${String(action)}`, 400)
+      } catch (error) {
+        return jsonResponse({ error: error.message }, 502)
+      }
+    },
+  }), 'autoresearch-ui: lark route')
 
   ctx.logger?.info?.('autoresearch-ui: routes registered')
 }

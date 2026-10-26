@@ -36,7 +36,9 @@
     "dsh-autoresearch-api": "file:../dsh-autoresearch-api",
     "dsh-autoresearch-gates": "file:../dsh-autoresearch-gates",
     "dsh-autoresearch-remote": "file:../dsh-autoresearch-remote",
-    "dsh-autoresearch-qa": "file:../dsh-autoresearch-qa"
+    "dsh-autoresearch-qa": "file:../dsh-autoresearch-qa",
+    "dsh-autoresearch-autodl": "file:../dsh-autoresearch-autodl",
+    "dsh-autoresearch-lark": "file:../dsh-autoresearch-lark"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

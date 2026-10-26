@@ -1,0 +1,32 @@
+{
+  "name": "dsh-autoresearch-autodl",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AutoDL 算力接入：账户/实例/镜像查询、带预算护栏的全自动开关机与租约回收。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/client.js": "./lib/client.js",
+    "./lib/automation.js": "./lib/automation.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./lib/config.js": "./lib/config.js"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}

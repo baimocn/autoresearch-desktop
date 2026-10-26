@@ -1,0 +1,32 @@
+{
+  "name": "dsh-autoresearch-lark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "飞书集成：题包状态/门禁/轨迹三表同步、群通知、CLI 逃生舱口。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/cli.js": "./lib/cli.js",
+    "./lib/sync.js": "./lib/sync.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./lib/config.js": "./lib/config.js"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  }
+}
