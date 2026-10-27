@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile, readdir, stat, access } from 'node:fs/promises'
 import { join, dirname, resolve, isAbsolute, basename } from 'node:path'
+import { coverageOf, describeMissing, expectedCheckIds } from './coverage.js'
 
 /** 共识要求的两路身份必须两两不同。 */
 export const IDENTITY_FIELDS = Object.freeze(['provider', 'model', 'version', 'session_id'])
@@ -420,6 +421,26 @@ export async function runDualQa(input) {
   else if (consensus?.status === 'PASS') verdict = 'PASS'
   else verdict = 'NOT_READY'
 
+  // ── 逐项覆盖断言（平台强制，模型跳不过）──────────────────────────────
+  //
+  // 共识只比较两路**都写了**的条目：两路漏掉同一批时没有分歧，聚合照样
+  // PASS —— 这是实测确认的跳过洞。所以共识 PASS 之后还要过覆盖断言：
+  // 权威清单（QA01–QA21 / G01–G03 / H01–H06）从 0.3.10 判据脚本运行时解析，
+  // 任何一路漏判都把结论压到 NEEDS_EVIDENCE 并点名缺失项。
+  //
+  // 清单解析失败也视为不通过：宁可门禁坏掉，也不能按空清单全部放行。
+  let coverage = null
+  if (bothHaveReports) {
+    try {
+      const expected = await expectedCheckIds(input.resolveCheckAsset)
+      coverage = coverageOf(lanes.map((lane) => lane.report), expected)
+      if (!coverage.ok && verdict === 'PASS') verdict = 'NEEDS_EVIDENCE'
+    } catch (error) {
+      coverage = { ok: false, error: error.message }
+      if (verdict === 'PASS') verdict = 'NEEDS_EVIDENCE'
+    }
+  }
+
   const notes = []
   for (const lane of lanes) {
     if (lane.spawnError !== null) notes.push(`第 ${lane.laneIndex} 路启动失败：${lane.spawnError}`)
@@ -428,6 +449,11 @@ export async function runDualQa(input) {
       notes.push(`第 ${lane.laneIndex} 路未产出 report.json（退出码 ${lane.exitCode}）；` +
         `该路可能未完成技能流程，见 lane-${lane.laneIndex}/run.stderr.log`)
     }
+  }
+  if (coverage !== null && verdict !== 'INCOMPLETE') {
+    notes.push(coverage.error !== undefined
+      ? `逐项覆盖断言无法执行：${coverage.error}`
+      : `逐项覆盖：${coverage.ok ? 'QA01–QA21 / G01–G03 / H01–H06 全部有判定' : describeMissing(coverage.missing)}`)
   }
   if (sharedCredential) {
     notes.push('两路共用同一凭据环境变量：身份（provider/model/version/session）仍两两不同，' +
@@ -440,6 +466,7 @@ export async function runDualQa(input) {
     skill: REQUIRED_SKILL,
     lanes,
     consensus,
+    coverage,
     verdict,
     notes,
     workRoot: input.workRoot,

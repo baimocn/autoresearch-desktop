@@ -131,7 +131,7 @@ function makeContext() {
 const EXPECTED = {
   'dsh-autoresearch': ['autoresearch_init', 'autoresearch_gate', 'autoresearch_advance', 'autoresearch_trajectory'],
   'dsh-autoresearch-gates': ['autoresearch_gate_env', 'autoresearch_gate_run'],
-  'dsh-autoresearch-qa': ['autoresearch_qa_pack', 'autoresearch_qa_lanes', 'autoresearch_qa_dual', 'autoresearch_qa_verify', 'autoresearch_deliberate'],
+  'dsh-autoresearch-qa': ['autoresearch_qa_pack', 'autoresearch_qa_lanes', 'autoresearch_qa_dual', 'autoresearch_qa_verify', 'autoresearch_qa_waiver', 'autoresearch_deliberate'],
   'dsh-autoresearch-api': ['autoresearch_api_add', 'autoresearch_api_verify', 'autoresearch_api_dual_lanes'],
   'dsh-autoresearch-remote': [
     'autoresearch_remote_target', 'autoresearch_remote_probe', 'autoresearch_remote_submit',

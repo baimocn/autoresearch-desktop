@@ -167,6 +167,30 @@ if (process.env.AUTODL_TOKEN) {
   console.log('  skip  未设 AUTODL_TOKEN，线上层跳过（本地层已覆盖结构与护栏）')
 }
 
+console.log('=== QA 逐项覆盖断言（本地层：0.3.10 判据脚本为权威）===')
+{
+  const { pathToFileURL } = await import('node:url')
+  const { resolve } = await import('node:path')
+  const COV = await import('../packages/dsh-autoresearch-qa/lib/coverage.js')
+  const GATES = await import('../packages/dsh-autoresearch-gates/lib/tools.js')
+  const expected = await COV.expectedCheckIds(GATES.resolveUpstreamAsset)
+  check('权威清单 21/3/6', expected.qa.length === 21 && expected.gate.length === 3 && expected.harbor.length === 6,
+    'QA01–QA21 + G01–G03 + H01–H06（运行时从 0.3.10 判据脚本解析）')
+  const mkReport = (qaIds, gateIds, harborIds) => ({
+    checks: qaIds.map((id) => ({ id, status: 'pass' })),
+    content_gates: { checks: gateIds.map((id) => ({ id, status: 'pass' })) },
+    harbor: { checks: harborIds.map((id) => ({ id, status: 'pass' })) },
+  })
+  const all = mkReport(expected.qa, expected.gate, expected.harbor)
+  // 实测确认的跳过洞：两路漏掉同批条目时共识层无分歧、照样 PASS —— 覆盖断言必须抓。
+  const partial = mkReport(expected.qa.slice(0, 17), expected.gate, expected.harbor)
+  const hole = COV.coverageOf([partial, JSON.parse(JSON.stringify(partial))], expected)
+  check('两路同漏 QA18–QA21 → 被抓', !hole.ok && hole.missing.qa.join(',') === 'QA18,QA19,QA20,QA21')
+  check('全覆盖 → 放行', COV.coverageOf([all, JSON.parse(JSON.stringify(all))], expected).ok === true)
+  check('单路漏 → 被抓', !COV.coverageOf([all, partial], expected).ok)
+  check('空报告 → 全部缺失', !COV.coverageOf([{}, {}], expected).ok)
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log('\n' + '='.repeat(60))
 console.log(`autodl + lark 自测：${results.length - failed.length} 通过，${failed.length} 失败，共 ${results.length} 项`)

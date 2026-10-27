@@ -21,9 +21,11 @@ import { readFile, writeFile, mkdir, stat, access } from 'node:fs/promises'
 import { join, dirname, resolve, isAbsolute, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { spawn } from 'node:child_process'
 import {
   QaRunnerError, REQUIRED_SKILL, validateLanes, runDualQa, auditConsensus, sha256File,
 } from './lib/runner.js'
+import { coverageOf, describeMissing, expectedCheckIds } from './lib/coverage.js'
 import { packDirectory, listZipEntries, FORBIDDEN_NAMES, FORBIDDEN_EXTENSIONS } from './lib/zip.js'
 import { readLanesFile, writeLanesFile, resolveSavedLanes } from './lib/lanes.js'
 import { listProviders, profilePatchPath } from 'dsh-autoresearch-api/lib/profile-patch.js'
@@ -579,6 +581,7 @@ export function apply(ctx, rawConfig) {
           unresolvedDisagreements: result.consensus.unresolvedDisagreements,
           validationErrors: result.consensus.validationErrors,
         },
+        coverage: result.coverage ?? null,
         verdict: result.verdict,
         notes: result.notes,
       }, null, 2), 'utf8')
@@ -600,6 +603,15 @@ export function apply(ctx, rawConfig) {
           const decision = lane.report.summary?.decision
           lines.push(`  技能结论：${decision ?? '（未写 decision）'}`)
         }
+      }
+
+      if (result.coverage !== null && result.coverage !== undefined) {
+        lines.push('', '逐项覆盖（平台强制，模型跳不过）：')
+        lines.push(result.coverage.error !== undefined
+          ? `  断言无法执行：${result.coverage.error}`
+          : `  ${result.coverage.ok
+            ? 'QA01–QA21 / G01–G03 / H01–H06 每一路全部有判定'
+            : `存在缺口 —— ${describeMissing(result.coverage.missing)}`}`)
       }
 
       lines.push('', '聚合：')
@@ -668,6 +680,30 @@ export function apply(ctx, rawConfig) {
         throw new Error(`无法读取聚合结果：${error.message}`)
       }
       const problems = auditConsensus(parsed)
+
+      // ── 逐项覆盖断言（平台强制，模型跳不过）────────────────────────────
+      // 共识 JSON 不含逐项判定，只含「未解决的分歧」；两路漏判同一批条目时
+      // 没有分歧记录，聚合照样 PASS（实测确认的跳过洞）。所以复核必须回到
+      // 两份 lane report 上重新清点；权威清单从 0.3.10 判据脚本运行时解析，
+      // 清单解析失败也如实计入问题，不静默放行。
+      let coverage = null
+      try {
+        const reports = []
+        for (const ref of parsed.qa_reports ?? []) {
+          const reportPath = isAbsolute(ref.path ?? '') ? ref.path : resolve(dirname(path), ref.path ?? '')
+          reports.push(JSON.parse(await readFile(reportPath, 'utf8')))
+        }
+        if (reports.length === 0) {
+          problems.push('聚合结果未引用任何 lane report，无法断言逐项覆盖')
+        } else {
+          const expected = await expectedCheckIds(resolveUpstreamAsset)
+          coverage = coverageOf(reports, expected)
+          if (!coverage.ok) problems.push(`逐项覆盖缺口 —— ${describeMissing(coverage.missing)}`)
+        }
+      } catch (error) {
+        problems.push(`逐项覆盖断言无法执行：${error.message}`)
+      }
+
       const lines = [
         `聚合结果：${path}`,
         `结论：${parsed.status ?? '（缺 status）'}`,
@@ -675,13 +711,81 @@ export function apply(ctx, rawConfig) {
         '',
       ]
       if (problems.length === 0) {
-        lines.push('发布门：满足（两份报告同源、身份两两不同、逐项判定无分歧）。')
+        lines.push('发布门：满足（两份报告同源、身份两两不同、逐项判定无分歧且全覆盖）。')
       } else {
         lines.push('发布门：未满足', ...problems.map((problem) => `  [问题] ${problem}`))
       }
-      return { path, consensus: parsed, problems, satisfied: problems.length === 0, report: lines.join('\n') }
+      return { path, consensus: parsed, coverage, problems, satisfied: problems.length === 0, report: lines.join('\n') }
     },
     presentCall: (args) => ({ card: 'generic', title: `复核聚合结果：${args.consensus}`, kind: 'read' }),
+  }))
+
+  // ── 工具：旧题豁免后处理（0.3.10-standard-waiver.5）──────────────────────
+  //
+  // audit_standard_with_waivers.py 的语义：先跑**未修改的** v0.3.10 全量审计，
+  // 再按审阅底稿逐发现应用豁免。它是旧题返修链的最后一环 —— 在接线之前，
+  // 这条流程在平台上是纸面的（实测全库搜索零调用）。
+  //
+  // fail-closed：脚本缺失、启动失败、退出码非 0 都如实报错；不猜「大概过了」。
+  // 底稿（standard_review / review）可选 —— 缺省时脚本按「未提供 → 按已授权
+  // 旧题缺口豁免」语义走；但**给了就必须真实存在**，传不存在的底稿等于伪造豁免输入。
+  ctx.tools.register(defineTool({
+    name: 'autoresearch_qa_waiver',
+    description: '对旧格式题包运行豁免审计（audit_standard_with_waivers.py）：先执行未修改的 v0.3.10 全量审计，再逐发现应用已批准豁免。review.json 与 legacy_review.json 是内部底稿，不是新增交付物。',
+    parameters: {
+      source: { type: 'string', required: true, description: '题包目录或 ZIP 路径' },
+      standard_review: { type: 'string', description: '原 v0.3.10 review.json 内部底稿路径（可选）' },
+      review: { type: 'string', description: '完整审阅与逐原因豁免底稿路径（可选）' },
+      out_dir: { type: 'string', required: true, description: '输出目录（必须不存在或为空；报告三件套写在这里）' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: value.report }],
+    },
+    async execute(args) {
+      const root = resolveRoot()
+      const at = (p) => (isAbsolute(p) ? p : resolve(root, p))
+      const script = await resolveUpstreamAsset('audit_standard_with_waivers.py', 'upstream-0.3.10')
+      if (script === null) {
+        throw new Error('找不到 audit_standard_with_waivers.py（upstream-0.3.10 来源）。'
+          + '该脚本是旧题豁免链的默认入口，缺失时门禁拒绝继续。')
+      }
+      const python = process.platform === 'win32' ? 'python' : 'python3'
+      const outDir = at(args.out_dir)
+      const argv = [script, at(args.source), '--out-dir', outDir]
+      for (const [flag, key] of [['--standard-review', 'standard_review'], ['--review', 'review']]) {
+        if (args?.[key]) {
+          const reviewPath = at(args[key])
+          await readFile(reviewPath, 'utf8') // 不存在会抛错：伪造的底稿输入在这拦住
+          argv.push(flag, reviewPath)
+        }
+      }
+      const startedAt = Date.now()
+      const outcome = await new Promise((resolvePromise) => {
+        const child = spawn(python, argv, {
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+          windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        let stdout = '', stderr = ''
+        child.stdout.on('data', (c) => { stdout += c })
+        child.stderr.on('data', (c) => { stderr += c })
+        child.on('error', (e) => resolvePromise({ spawnError: e.message, stdout: '', stderr: '', exitCode: null }))
+        child.on('close', (code) => resolvePromise({ spawnError: null, stdout, stderr, exitCode: code }))
+      })
+      const decisionMatch = /"decision"\s*:\s*"([A-Z_]+)"/.exec(outcome.stdout)
+      const decision = decisionMatch === null ? null : decisionMatch[1]
+      const report = [
+        `豁免审计：${outcome.spawnError !== null ? `启动失败 — ${outcome.spawnError}` : `退出码 ${outcome.exitCode}`}（${((Date.now() - startedAt) / 1000).toFixed(1)}s）`,
+        `结论：${decision ?? '（未解析到 decision）'}`,
+        `输出目录：${outDir}`,
+        outcome.stderr.trim() !== '' ? `stderr：${outcome.stderr.trim().slice(0, 400)}` : null,
+      ].filter(Boolean).join('\n')
+      if (outcome.spawnError !== null || outcome.exitCode !== 0) {
+        return { ok: false, decision, outDir, report, stderr: outcome.stderr.slice(0, 2000) }
+      }
+      return { ok: true, decision, outDir, report }
+    },
+    presentCall: (args) => ({ card: 'generic', title: `豁免审计：${args.source}`, kind: 'read' }),
   }))
 
   ctx.logger?.info?.('autoresearch-qa: dual-lane tools registered')
