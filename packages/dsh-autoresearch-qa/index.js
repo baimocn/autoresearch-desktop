@@ -17,7 +17,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { readFile, writeFile, mkdir, stat, access } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, stat, access, readdir } from 'node:fs/promises'
 import { join, dirname, resolve, isAbsolute, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
@@ -26,13 +26,19 @@ import {
   QaRunnerError, REQUIRED_SKILL, validateLanes, runDualQa, auditConsensus, sha256File,
 } from './lib/runner.js'
 import { coverageOf, describeMissing, expectedCheckIds } from './lib/coverage.js'
+import {
+  REFERENCES, QA_ITEMS, HARBOR_ITEMS, GATE_ITEMS, ALLOWED_STATUS, DISPOSITIONS, DECISION_LAYERS,
+  SPECIAL_TABLES, FORBIDDEN_PHRASES, evidenceProblems, validateFilledTable, validateJudgementQueue,
+  validateAttributionReview, validateCaliberReview, weakestLinkProblems, scopeDeclarationProblems,
+  manifestPath, readGateManifest, confirmGate, requirePreviousGates, deliverableProblems, readJsonStrict,
+} from './lib/paradigm.js'
 import { packDirectory, listZipEntries, FORBIDDEN_NAMES, FORBIDDEN_EXTENSIONS } from './lib/zip.js'
 import { readLanesFile, writeLanesFile, resolveSavedLanes } from './lib/lanes.js'
 import { listProviders, profilePatchPath } from 'dsh-autoresearch-api/lib/profile-patch.js'
 import { readCredentialRefs } from 'dsh-autoresearch-api/lib/providers.js'
 // 上游资产解析器：全仓唯一的「哪一份资产在哪」声明（见 gates/lib/tools.js）。
 // 用静态 import 而非动态 await —— apply() 不是 async，动态 import 会直接语法错误。
-import { resolveUpstreamAsset } from 'dsh-autoresearch-gates/lib/tools.js'
+import { resolveUpstreamAsset, ASSETS_ROOT } from 'dsh-autoresearch-gates/lib/tools.js'
 
 export const name = 'autoresearch-qa'
 
@@ -786,6 +792,240 @@ export function apply(ctx, rawConfig) {
       return { ok: true, decision, outDir, report }
     },
     presentCall: (args) => ({ card: 'generic', title: `豁免审计：${args.source}`, kind: 'read' }),
+  }))
+
+  // ── 工具：工程化质检范式（v3，最高规格）—— 六道闸门的强制层 ─────────────
+  //
+  // 提示词（提示词_通用_工程化质检.md）里「六道闸门必须依次通过，不许合并、
+  // 不许跳」是写给执行者的纪律；这里把它变成机制：
+  //   · 闸门 N 的调用先查 manifest，N−1 未确认直接拒绝并列出被跳过的闸门
+  //   · 每道闸门的结构要求（清单/空表/evidence 形态/封闭处置词/交付表清单）
+  //     由 lib/paradigm.js 校验，缺一张表、缺一行、漏一条处置都会被点名
+  //   · 每道闸门确认后写 manifest，作为下一道的运行前置
+  // 语义深度（证据是否支持结论）仍在审阅者；本层保证结构上没有「跳过还
+  // 声称完成」的空间。
+  const at2 = (p) => (isAbsolute(p) ? p : resolve(resolveRoot(), p))
+  const paradigmRefsDir = () => join(ASSETS_ROOT, 'qa-0.3.10', 'autoresearch-task-qa', 'references')
+
+  ctx.tools.register(defineTool({
+    name: 'autoresearch_qa_paradigm_gate',
+    description: '工程化质检范式（v3）六道闸门：依次运行或校验闸门 1–6。闸门 N 拒绝运行除非 N−1 已确认（顺序强制）。闸门 1=建清单（18 份参考规范）、2=空表、3=逐项填 evidence、4=深挖十一表、5=硬事实核验与 decision、6=交付物与自我指弱。',
+    parameters: {
+      gate: { type: 'number', required: true, description: '闸门号 1–6' },
+      out_dir: { type: 'string', required: true, description: '本轮报告目录（必须在待检产物外）' },
+      filled_table: { type: 'string', description: '闸门 3：已填表 JSON 文件路径（{id,status,evidence,依据} 数组）' },
+      confirm: { type: 'boolean', description: '校验通过后确认本闸门（写入 manifest）' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: value.report }],
+    },
+    async execute(args) {
+      const gate = Number(args?.gate)
+      if (!Number.isInteger(gate) || gate < 1 || gate > 6) {
+        throw new QaRunnerError(`闸门号必须是 1–6，收到 ${args?.gate}`)
+      }
+      const outDir = at2(args.out_dir)
+      // 顺序强制：先于一切校验执行。
+      const manifest = await requirePreviousGates(outDir, gate)
+
+      const problems = []
+      const artifacts = {}
+
+      if (gate === 1) {
+        // 建清单：18 份参考规范逐一列名并确认存在。
+        let entries = []
+        try { entries = await readdir(paradigmRefsDir()) } catch (e) {
+          problems.push(`参考规范目录不可读：${e.message}`)
+        }
+        const present = new Set(entries)
+        const rows = REFERENCES.map((name) => ({
+          参考文件: `${name}.md`,
+          在场: present.has(`${name}.md`) ? '是' : '**缺失**',
+          本轮是否必读: '必读',
+        }))
+        for (const row of rows) {
+          if (row.在场 !== '是') problems.push(`参考规范缺失：${row.参考文件}`)
+        }
+        if (entries.length !== REFERENCES.length) {
+          problems.push(`参考规范数量 ${entries.length} ≠ 权威清单 ${REFERENCES.length}`)
+        }
+        artifacts['gate1_references'] = rows
+      }
+
+      if (gate === 2) {
+        // 空表：先出骨架，status 全空；不给填。
+        const skeleton = [
+          ...QA_ITEMS.map((id) => ({ id, status: '', evidence: '' })),
+          ...HARBOR_ITEMS.map((id) => ({ id, status: '', evidence: '' })),
+          ...GATE_ITEMS.map((id) => ({ id, status: '', evidence: '' })),
+        ]
+        artifacts['gate2_empty_tables'] = skeleton
+      }
+
+      if (gate === 3) {
+        // 逐项填：读 filled_table，全部条目在场 + status 合法 + evidence 形态。
+        if (!args?.filled_table) problems.push('闸门 3 必须提供 filled_table（已填表 JSON 路径）')
+        else {
+          const items = await readJsonStrict(at2(args.filled_table))
+          const list = Array.isArray(items) ? items : (items.items ?? [])
+          problems.push(...validateFilledTable(list, { expectedIds: [...QA_ITEMS, ...HARBOR_ITEMS, ...GATE_ITEMS] }))
+          artifacts['gate3_filled_count'] = list.length
+        }
+      }
+
+      if (gate === 4) {
+        // 深挖十一表中的闸门 4 专属表 + 判读队列封闭处置 + 归属/口径校验。
+        const gate4Tables = SPECIAL_TABLES.filter((t) => t.gate.startsWith('4.'))
+        for (const table of gate4Tables) {
+          const path = join(outDir, table.file)
+          try {
+            await readFile(path, 'utf8')
+          } catch {
+            problems.push(`缺专项表 ${table.file}（${table.label}，闸门 ${table.gate}）`)
+          }
+        }
+        try {
+          const queue = await readJsonStrict(join(outDir, 'judgement_queue.json'))
+          problems.push(...validateJudgementQueue(queue.entries ?? queue))
+        } catch (e) { problems.push(e.message) }
+        try {
+          const attr = await readJsonStrict(join(outDir, 'attribution_review.json'))
+          problems.push(...validateAttributionReview(attr.entries ?? attr))
+        } catch (e) { problems.push(e.message) }
+        try {
+          const cal = await readJsonStrict(join(outDir, 'caliber_review.json'))
+          problems.push(...validateCaliberReview(cal.entries ?? cal))
+        } catch (e) { problems.push(e.message) }
+        try {
+          const matrix = await readJsonStrict(join(outDir, 'table_object_caliber_matrix.json'))
+          artifacts['gate4_matrix_rows'] = Array.isArray(matrix) ? matrix.length : (matrix?.rows?.length ?? 0)
+        } catch (e) { problems.push(e.message) }
+      }
+
+      if (gate === 5) {
+        // 硬事实核验：decision 字段原样（两个分层取值集不同）。
+        for (const [layer, allowed] of Object.entries(DECISION_LAYERS)) {
+          try {
+            const report = await readJsonStrict(join(outDir, layer, 'report.json'))
+            const decision = report?.summary?.decision ?? report?.decision ?? null
+            if (decision === null) problems.push(`${layer}/report.json 缺 decision 字段`)
+            else if (!allowed.includes(decision)) {
+              problems.push(`${layer}/report.json 的 decision "${decision}" 不在该层允许集（${allowed.join('/')}）`)
+            } else artifacts[`decision_${layer}`] = decision
+          } catch (e) { problems.push(`${layer}：${e.message}`) }
+        }
+        // 5.5 复核底稿与闸门 4 共用，这里只确认在。
+        try { await readJsonStrict(join(outDir, 'caliber_review.json')) } catch (e) {
+          problems.push(`5.5 表格口径与归属复核：${e.message}`)
+        }
+      }
+
+      if (gate === 6) {
+        // 交付物清单 + 自我指弱 + 核对范围。
+        problems.push(...(await deliverableProblems(outDir)))
+        let reportText = ''
+        try { reportText = await readFile(join(outDir, 'report.md'), 'utf8') } catch {
+          try { reportText = await readFile(join(outDir, 'report.txt'), 'utf8') } catch { /* 已由 deliverableProblems 记录 */ }
+        }
+        problems.push(...weakestLinkProblems(reportText))
+        const scope = scopeDeclarationProblems(reportText)
+        problems.push(...scope.problems)
+        if (scope.advisories.length > 0) {
+          artifacts['advisories'] = scope.advisories.map((s) => `否定结论缺分母（提示，不阻塞）：${s}`)
+        }
+        try {
+          const weak = await readJsonStrict(join(outDir, 'weakest_link.json'))
+          artifacts['weakest_link'] = weak
+        } catch (e) { problems.push(e.message) }
+      }
+
+      const report = [
+        `闸门 ${gate}：${problems.length === 0 ? '结构校验全部通过' : `${problems.length} 个问题`}`,
+        ...problems.map((p) => `  [问题] ${p}`),
+        gate === 6 && problems.length === 0 ? '交付物十一表 + 终稿 + 分层目录齐备；最薄弱环节与核对范围在位。' : '',
+      ].filter(Boolean).join('\n')
+
+      const confirmedNow = problems.length === 0 && args?.confirm === true
+      if (confirmedNow) {
+        await confirmGate(outDir, gate, { problems, artifacts })
+      }
+
+      return {
+        gate,
+        outDir,
+        ok: problems.length === 0,
+        confirmed: confirmedNow,
+        confirmedGates: Object.keys(manifest.confirmed).sort(),
+        artifacts,
+        problems,
+        report: report + (confirmedNow ? '\n已写入 manifest，下一道闸门解锁。'
+          : (problems.length === 0 ? '\n结构校验通过；传 confirm: true 确认本闸门并解锁下一道。' : '')),
+      }
+    },
+    presentCall: (args) => ({ card: 'generic', title: `范式闸门 ${args.gate}`, kind: 'read' }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'autoresearch_qa_paradigm_verify',
+    description: '工程化质检范式的收尾核验卡（14 条）：自动可查的项（decision 原样、交付表在位、判读队列落锤数、覆盖矩阵在位）直接填答案，需要人工作答的项原样列为追问。答不出即打回。',
+    parameters: {
+      out_dir: { type: 'string', required: true, description: '本轮报告目录' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value) => [{ type: 'text', text: value.report }],
+    },
+    async execute(args) {
+      const outDir = at2(args.out_dir)
+      const manifest = await readGateManifest(outDir)
+      const items = []
+      const push = (n, question, auto) => items.push({ n, question, auto })
+
+      // 自动可查：decision 原样（卡 8）
+      const decisions = {}
+      for (const layer of Object.keys(DECISION_LAYERS)) {
+        try {
+          const report = await readJsonStrict(join(outDir, layer, 'report.json'))
+          decisions[layer] = report?.summary?.decision ?? report?.decision ?? null
+        } catch { decisions[layer] = null }
+      }
+      push(8, 'report.json 的 decision 字段原样（≠PASS 不得说"通过"）', decisions)
+
+      // 自动可查：判读队列落锤数（卡 12）
+      try {
+        const queue = await readJsonStrict(join(outDir, 'judgement_queue.json'))
+        const entries = queue.entries ?? queue
+        const byDisposition = {}
+        for (const e of entries) byDisposition[e.disposition] = (byDisposition[e.disposition] ?? 0) + 1
+        push(12, `队列 ${entries.length} 条；落锤分布 ${JSON.stringify(byDisposition)}；确认错误/无法判定须进最终报告`, null)
+      } catch (e) { push(12, `判读队列不可读：${e.message}`, null) }
+
+      // 自动可查：十一表在场（卡 6/11 的材料基础）
+      const deliverables = await deliverableProblems(outDir)
+      push(6, deliverables.length === 0 ? '十一张专项表 + 终稿齐备' : `缺：${deliverables.join('；')}`, null)
+
+      // 人工作答项（原样列出，逐条追问）
+      push(1, '【机械复算】任选一个 pass 项现场重算核心数值，贴命令与输出')
+      push(2, '【evidence 抽查】任选两个 pass 项的 evidence（文件:行）当场打开核对')
+      push(3, '【绕过面】任选一个 enforced 约束：覆盖通道表在哪一行？三路径推演过吗？')
+      push(4, '【正式值】每个正式 seed 的原始产物路径？主指标复算过吗？')
+      push(5, '【废止声明】旧原文、新原文、冲突并列各贴一行（若有）')
+      push(7, '【原判与豁免】每个 pass_with_waivers 项：原判、reason code、保留事实')
+      push(9, '【自我指弱】最薄弱环节是哪条？须覆盖「未核对类别」')
+      push(10, '【归属核对】任选一条能力/边界声明：描述对象与实现证据指向同一对象吗？')
+      push(11, '【口径矩阵】任取一个数值单元格：列声称口径 vs 当前生效口径，复算一致吗？')
+      push(13, '【行间借光】任取一张并排表：对象口径一致吗？有无未标口径的单元格？')
+      push(14, '【否定结论】每个「未发现/全部通过」的覆盖范围与分母（逐条判读数 vs 机器扫描数）')
+
+      const manifestGates = Object.keys(manifest.confirmed).sort()
+      const report = [
+        `范式核验卡（14 条）：闸门确认状态 ${manifestGates.join(', ') || '（无）'}`,
+        ...items.map((i) => `${i.n}. ${i.question}${i.auto !== undefined && i.auto !== null ? ` —— 自动答案：${JSON.stringify(i.auto)}` : ''}`),
+      ].join('\n')
+      return { outDir, confirmedGates: manifestGates, decisions, items, report }
+    },
+    presentCall: (args) => ({ card: 'generic', title: '范式核验卡', kind: 'read' }),
   }))
 
   ctx.logger?.info?.('autoresearch-qa: dual-lane tools registered')

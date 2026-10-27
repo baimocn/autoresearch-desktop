@@ -191,6 +191,31 @@ console.log('=== QA 逐项覆盖断言（本地层：0.3.10 判据脚本为权�
   check('空报告 → 全部缺失', !COV.coverageOf([{}, {}], expected).ok)
 }
 
+console.log('=== 工程化质检范式 v3（六道闸门强制层，本地层）===')
+{
+  const P = await import('../packages/dsh-autoresearch-qa/lib/paradigm.js')
+  check('权威参考规范 18 份', P.REFERENCES.length === 18)
+  check('条目清单 21/6/3', P.QA_ITEMS.length === 21 && P.HARBOR_ITEMS.length === 6 && P.GATE_ITEMS.length === 3)
+  check('处置词封闭四种', P.DISPOSITIONS.join('/') === '确认正确/确认无关/确认错误/无法判定')
+  check('专项表 11 张', P.SPECIAL_TABLES.length === 11)
+  check('evidence 无行号被点名', P.evidenceProblems('result.json').length > 0)
+  check('evidence 带行号合格', P.evidenceProblems('result.json:42').length === 0)
+  check('evidence JSON Pointer 合格', P.evidenceProblems('result.json#/metrics/score').length === 0)
+  const items = [
+    { id: 'QA01', status: 'pass', evidence: 'a.json:1', 依据: '复算一致' },
+    { id: 'QA02', status: 'pass', evidence: 'b.json', 依据: '看起来没问题' },
+    { id: 'QA03', status: 'manual', evidence: '', 依据: '缺对照' },
+  ]
+  const probs = P.validateFilledTable(items, { expectedIds: ['QA01','QA02','QA03','QA04'] })
+  check('QA04 缺行被点名', probs.some((x) => x.includes('QA04')))
+  check('QA02 禁语被点名', probs.some((x) => x.includes('QA02') && x.includes('禁语')))
+  check('QA02 无行号 evidence 提示降 manual', probs.some((x) => x.includes('QA02') && x.includes('manual')))
+  check('QA03 manual+空 evidence 合法', !probs.some((x) => x.includes('QA03')))
+  const qProblems = P.validateJudgementQueue([{ 队列号: 1, disposition: '明显无关' }])
+  check('「明显无关」被拒收', qProblems.some((x) => x.includes('不在封闭集')))
+  check('缺最薄弱环节被点名', P.weakestLinkProblems('# 报告').length > 0)
+  check('「没有薄弱环节」视为未完成', P.weakestLinkProblems('最薄弱环节：没有薄弱环节').some((x) => x.includes('未完成')))
+}
 const failed = results.filter((r) => !r.ok)
 console.log('\n' + '='.repeat(60))
 console.log(`autodl + lark 自测：${results.length - failed.length} 通过，${failed.length} 失败，共 ${results.length} 项`)
