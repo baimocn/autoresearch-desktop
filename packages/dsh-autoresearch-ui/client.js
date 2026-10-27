@@ -31,7 +31,7 @@ window.__ModuleLoader__.load({
 .aw-panel{
   /* 字号系统：收敛 10 种散落字号到 5 档 —— 之前 11/11.5/12/12.5/13/14/15.5/16/17/20/21
      混用，同一层级的文字在不同卡片里不一样大，是「怪」的主要来源之一。 */
-  --aw-fs-xs:11px;--aw-fs-sm:12px;--aw-fs-md:13px;--aw-fs-lg:15px;--aw-fs-xl:19px;
+  --aw-fs-xs:11.5px;--aw-fs-sm:12.5px;--aw-fs-md:13.5px;--aw-fs-lg:16px;--aw-fs-xl:21px;
   /* 间距系统：4 的倍数，只有这五档 */
   --aw-sp-1:4px;--aw-sp-2:8px;--aw-sp-3:12px;--aw-sp-4:16px;--aw-sp-5:24px;
   /* 状态色：优先取 DSH 语义 token，回退值只作兜底。
@@ -81,7 +81,8 @@ window.__ModuleLoader__.load({
   --aw-mono:var(--dsw-font-markdown-code-block,ui-monospace,SFMono-Regular,Consolas,monospace);
   --aw-r-ctl:var(--dsw-radius-sm,7px);--aw-r-box:var(--dsw-radius-lg,12px);
   font-family:var(--dsw-font-family,inherit);color:var(--aw-ink);
-  padding:20px 22px 40px;max-width:1240px;margin:0 auto;}
+  padding:24px 28px 56px;max-width:1320px;margin:0 auto;
+  font-variant-numeric:tabular-nums;}
 .aw-panel *{box-sizing:border-box}
 .aw-panel code,.aw-mono{font-family:var(--aw-mono)}
 
@@ -103,7 +104,7 @@ window.__ModuleLoader__.load({
    这是原来 9 个平铺标签最缺的信息。 */
 .aw-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:var(--aw-sp-3)}
 .aw-head-main{min-width:0}
-.aw-head h2{margin:0;font-size:var(--aw-fs-xl);font-weight:650;letter-spacing:.2px;line-height:1.25}
+.aw-head h2{margin:0;font-size:var(--aw-fs-xl);font-weight:700;letter-spacing:-.3px;line-height:1.2}
 .aw-breadcrumb{margin:2px 0 0;font-size:var(--aw-fs-xs);color:var(--aw-ink-3);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .aw-sub{margin:0 0 var(--aw-sp-4);font-size:var(--aw-fs-sm);color:var(--aw-ink-2);line-height:1.6}
@@ -157,8 +158,8 @@ window.__ModuleLoader__.load({
    「健康」2.28:1，深色下 idle 2.44:1（AA 要求 4.5:1）。
    改成中性文字 + 彩色圆点后：状态照样一眼可见，文字两种主题都 ≥ 4.5:1。
    （圆点此前没有背景色，等于不存在 —— 状态只靠文字色表达，这正是上面那个坑。） */
-.aw-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;
-  font-size:var(--aw-fs-xs);font-weight:600;white-space:nowrap;
+.aw-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;
+  font-size:var(--aw-fs-xs);font-weight:600;white-space:nowrap;letter-spacing:.2px;
   color:var(--dsw-alias-label-secondary,#a1a1aa)}
 .aw-badge i{width:6px;height:6px;border-radius:50%;flex:none;background:currentColor}
 .aw-badge[data-tone="ok"]{background:var(--aw-ok-soft)}
@@ -172,19 +173,26 @@ window.__ModuleLoader__.load({
 .aw-badge[data-tone="idle"]{background:var(--aw-idle-soft)}
 .aw-badge[data-tone="idle"] i{background:var(--aw-idle)}
 
-.aw-card{position:relative;background:var(--aw-bg);border:1px solid var(--aw-line);border-radius:var(--aw-r-box);padding:var(--aw-sp-4) var(--aw-sp-4) var(--aw-sp-3) calc(var(--aw-sp-4) + 3px);
-  overflow:hidden;transition:border-color .15s,box-shadow .15s}
-.aw-card:hover{border-color:var(--aw-accent);box-shadow:0 6px 20px rgba(0,0,0,.16)}
+.aw-card{position:relative;background:var(--aw-bg);border:1px solid var(--aw-line);border-radius:var(--aw-r-box);
+  padding:var(--aw-sp-5) var(--aw-sp-5) var(--aw-sp-4) calc(var(--aw-sp-5) + 3px);
+  overflow:hidden;transition:border-color .15s,box-shadow .18s,transform .18s;box-shadow:var(--aw-shadow)}
+.aw-card:hover{border-color:var(--aw-line-strong);box-shadow:0 10px 32px -8px rgba(0,0,0,.24);transform:translateY(-1px)}
 /* 左侧色条：健康度唯一语义指示（原来顶部色条 + 徽章 + 指标色彩三处重复表达）。 */
 .aw-card::before{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:var(--aw-idle-soft)}
 .aw-card[data-health="ok"]::before{background:var(--aw-ok)}
 .aw-card[data-health="warn"]::before{background:var(--aw-warn)}
 .aw-card[data-health="bad"]::before{background:var(--aw-bad)}
 .aw-card[data-health="info"]::before{background:var(--aw-accent)}
-.aw-card h3{margin:0;font-size:var(--aw-fs-lg);font-weight:630;line-height:1.35}
+.aw-card h3{margin:0;font-size:var(--aw-fs-lg);font-weight:680;line-height:1.35;letter-spacing:-.2px}
+.aw-card h4{margin:0 0 var(--aw-sp-2);font-size:var(--aw-fs-md);font-weight:650;color:var(--aw-ink-2);letter-spacing:.3px}
+.aw-card .aw-big{font-size:26px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
 .aw-card .aw-path{margin:3px 0 0;font-size:var(--aw-fs-xs);color:var(--aw-ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .aw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:var(--aw-sp-4);align-items:stretch}
+/* 指标卡网格：AutoDL/飞书面板的三卡概览。minmax 260 保证三列在 1320 宽下放得下。 */
+.aw-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--aw-sp-4);margin-bottom:var(--aw-sp-4)}
+.aw-cards .aw-card{min-height:118px;display:flex;flex-direction:column;gap:var(--aw-sp-2)}
+.aw-cards .aw-card p{margin:0;font-size:var(--aw-fs-sm);color:var(--aw-ink-2)}
 /* 卡片内部纵向弹性：底部按钮行始终贴底 —— 内容多寡不同也保持视觉基线一致。 */
 .aw-card{display:flex;flex-direction:column}
 .aw-card .aw-cardbody{flex:1}
@@ -209,7 +217,7 @@ window.__ModuleLoader__.load({
 /* 指标 chip：数值 + 标签一体，除异常外统一用中性色 —— 颜色只传达「需要关注」。 */
 .aw-metric{display:inline-flex;align-items:baseline;gap:5px;padding:3px 9px;border-radius:var(--aw-r-ctl);
   background:var(--aw-bg-deep);border:1px solid var(--aw-line)}
-.aw-metric b{font-size:var(--aw-fs-sm);font-weight:650;color:var(--aw-ink);line-height:1.4}
+.aw-metric b{font-size:var(--aw-fs-md);font-weight:680;color:var(--aw-ink);line-height:1.4;font-variant-numeric:tabular-nums}
 .aw-metric b[data-tone="warn"]{color:var(--aw-warn)}
 .aw-metric b[data-tone="bad"]{color:var(--aw-bad)}
 .aw-metric b[data-tone="ok"]{color:var(--aw-ok)}
@@ -220,7 +228,7 @@ window.__ModuleLoader__.load({
 .aw-bru{display:flex;gap:0;margin-top:var(--aw-sp-3);border:1px solid var(--aw-line);border-radius:var(--aw-r-ctl);overflow:hidden}
 .aw-bru div{flex:1;padding:6px 10px;background:var(--aw-bg-deep)}
 .aw-bru div + div{border-left:1px solid var(--aw-line)}
-.aw-bru b{display:block;font-size:var(--aw-fs-sm);font-weight:620;font-variant-numeric:tabular-nums}
+.aw-bru b{display:block;font-size:var(--aw-fs-md);font-weight:650;font-variant-numeric:tabular-nums}
 .aw-bru span{font-size:var(--aw-fs-xs);color:var(--aw-ink-2);letter-spacing:.4px}
 
 .aw-bars{display:flex;align-items:flex-end;gap:3px;height:56px;padding:6px 6px 0;border-bottom:1px solid var(--aw-line);margin-top:10px}
@@ -229,7 +237,7 @@ window.__ModuleLoader__.load({
 .aw-bars i[data-miss="1"]{background:var(--aw-idle-soft)}
 
 .aw-sec{margin:18px 0 10px;display:flex;align-items:baseline;gap:10px}
-.aw-sec h3{margin:0;font-size:15px;font-weight:630}
+.aw-sec h3{margin:0;font-size:16px;font-weight:680;letter-spacing:-.2px}
 .aw-sec p{margin:0;font-size:12px;color:var(--aw-ink-2)}
 
 .aw-box{background:var(--aw-bg);border:1px solid var(--aw-line);border-radius:var(--aw-r-box);padding:var(--aw-sp-4);margin-bottom:var(--aw-sp-4)}
@@ -278,7 +286,7 @@ window.__ModuleLoader__.load({
 .aw-pre{max-height:300px;overflow:auto;background:var(--aw-bg-2);border:1px solid var(--aw-line);border-radius:var(--aw-r-ctl);padding:10px 12px;
   font-size:var(--aw-fs-xs);line-height:1.55;color:var(--aw-ink-2);white-space:pre-wrap;margin:8px 0 0;font-family:var(--aw-mono)}
 
-.aw-table{border-collapse:collapse;font-size:12px;width:100%}
+.aw-table{border-collapse:collapse;font-size:var(--aw-fs-sm);width:100%}
 .aw-table th{text-align:left;padding:6px 10px;color:var(--aw-ink-2);font-weight:550;font-size:11px;letter-spacing:.4px;
   text-transform:uppercase;border-bottom:1px solid var(--aw-line);white-space:nowrap}
 .aw-table td{padding:6px 10px;border-bottom:1px solid var(--aw-line);white-space:nowrap}
@@ -298,6 +306,19 @@ window.__ModuleLoader__.load({
       RECOMMEND: '通过', NEEDS_EVIDENCE: '需补证', REJECT: '不通过', PASS: 'PASS', FAIL: 'FAIL',
       UNKNOWN: 'UNKNOWN', complete: '已完成', running: '运行中', stalled: '进程已不在',
       failed: '失败', pending: '待启动', unknown: '状态未知', 'never-probed': '从未探测',
+    }
+
+    /**
+     * 分数/比率显示：最多 3 位小数。
+     * 修复实测缺陷 —— 任务卡片上渲染出 0.5489999999999999 与
+     * 0.41250000000000003 这种浮点尾数（codex 最佳分、B/R/U 校准值）。
+     * 整数（轮次、计数）保持原样；非数值原样透传。
+     */
+    function fmtScore(value) {
+      if (value === null || value === undefined) return '—'
+      const n = Number(value)
+      if (!Number.isFinite(n)) return String(value)
+      return Number.isInteger(n) ? String(n) : n.toFixed(3)
     }
 
     function Badge({ tone = 'idle', children, dot = true }) {
@@ -332,7 +353,7 @@ window.__ModuleLoader__.load({
     /** B/R/U 校准行。 */
     function BruRow({ calibration }) {
       if (!calibration || (calibration.baseline === null && calibration.upper === null)) return null
-      const fmt = (value) => value === null || value === undefined ? '—' : String(value)
+      const fmt = (value) => fmtScore(value)
       return h('div', { className: 'aw-bru' },
         h('div', null, h('span', null, 'B 基线'), h('b', null, fmt(calibration.baseline))),
         h('div', null, h('span', null, 'R 参考'), h('b', null, fmt(calibration.reference))),
@@ -466,7 +487,7 @@ window.__ModuleLoader__.load({
                   })
                   : null,
                 codex?.best !== null && codex?.best !== undefined
-                  ? h(Metric, { value: String(codex.best), label: 'codex 最佳分' })
+                  ? h(Metric, { value: fmtScore(codex.best), label: 'codex 最佳分' })
                   : null,
                 unfinished > 0
                   ? h(Metric, { value: String(unfinished), label: '远端任务', boxTone: 'warn' })
@@ -857,7 +878,7 @@ window.__ModuleLoader__.load({
                 : null,
               h(Metric, { value: String(stats.bestCount), label: '最佳标记' }),
               h(Metric, {
-                value: stats.bestScore === null ? '—' : String(stats.bestScore),
+                value: stats.bestScore === null ? '—' : fmtScore(stats.bestScore),
                 // 方向未知时不假装能取最佳 —— 如实标出。
                 label: stats.direction === null ? '最佳分（方向未知）' : `最佳分（${stats.direction}）`,
                 tone: stats.bestScore === null ? undefined : 'ok',
@@ -1505,11 +1526,6 @@ window.__ModuleLoader__.load({
      * 一级入口。`推进` 与 `核查` 各自展开为下面的二级标签，
      * 点一级入口默认落到该组第一页（按工作流顺序，不按热度）。
      */
-    const GROUPS = [
-      { id: 'progress', label: '推进', tabs: TAB_GROUPS[0].tabs },
-      { id: 'verify', label: '核查', tabs: TAB_GROUPS[1].tabs },
-    ]
-
     // 展平后仍是同一份 id → label 映射，供查找标题用。
     const TABS = [
       ['tasks', '任务组合'],
@@ -1802,44 +1818,32 @@ window.__ModuleLoader__.load({
             }, '复制'))
           : null,
 
+        // 单排标签：全局页与任务页混排，用分隔线区分两段。
+        // 早期分三处渲染（分组入口行 / 当前分组子页行 / 右侧 API 按钮），
+        // 加上算力/飞书后变成四排 —— 实测截图里标签比内容还占地方。
+        // 现在合并为一排：任务页只在绑定任务后出现；分组语义保留在面包屑里。
         h('nav', { className: 'aw-tabs', 'aria-label': '工作台分区' },
-          // 全局入口：不属于任何任务的推进/核查流程。
-          h('div', { className: 'aw-tabset' },
-            GROUPS.map((group) => h('button', {
-              key: group.id,
-              type: 'button',
-              className: 'aw-tab',
-              'data-on': group.tabs.some(([id]) => id === tab) ? '1' : '0',
-              'aria-current': group.tabs.some(([id]) => id === tab) ? 'page' : undefined,
-              onClick: () => setTab(group.tabs[0][0]),
-            }, group.label)),
+          h('button', {
+            key: 'tasks', type: 'button', className: 'aw-tab',
+            'data-on': tab === 'tasks' ? '1' : '0',
+            'aria-current': tab === 'tasks' ? 'page' : undefined,
+            onClick: () => setTab('tasks'),
+          }, '任务组合'),
 
-            h('span', { className: 'aw-tabsep', 'aria-hidden': 'true' }),
-
-            h('button', {
-              key: 'tasks', type: 'button', className: 'aw-tab',
-              'data-on': tab === 'tasks' ? '1' : '0',
-              'aria-current': tab === 'tasks' ? 'page' : undefined,
-              onClick: () => setTab('tasks'),
-            }, '任务组合'),
-
-            // 二级标签：只显示当前分组下的子页，避免 9 个标签平铺。
-            TAB_GROUPS.filter((group) => group.tabs.some(([id]) => id === tab))
-              .flatMap((group) => group.tabs)
-              .map(([id, label]) => h('button', {
-                key: id, type: 'button', className: 'aw-tab aw-tab-sub',
+          ...(task !== null
+            ? [
+              h('span', { key: 'sep-1', className: 'aw-tabsep', 'aria-hidden': 'true' }),
+              ...TAB_GROUPS.flatMap((group) => group.tabs).map(([id, label]) => h('button', {
+                key: id, type: 'button', className: 'aw-tab',
                 'data-on': tab === id ? '1' : '0',
                 'aria-current': tab === id ? 'page' : undefined,
                 onClick: () => setTab(id),
-              }, label))),
+              }, label)),
+            ]
+            : []),
 
-          h('div', { className: 'aw-spacer' }),
-          h('button', {
-            key: 'api', type: 'button', className: 'aw-tab',
-            'data-on': tab === 'api' ? '1' : '0',
-            'aria-current': tab === 'api' ? 'page' : undefined,
-            onClick: () => setTab('api'),
-          }, 'API 配置')),
+          h('span', { key: 'sep-2', className: 'aw-tabsep', 'aria-hidden': 'true' }),
+
           h('button', {
             key: 'autodl', type: 'button', className: 'aw-tab',
             'data-on': tab === 'autodl' ? '1' : '0',
@@ -1852,6 +1856,12 @@ window.__ModuleLoader__.load({
             'aria-current': tab === 'lark' ? 'page' : undefined,
             onClick: () => setTab('lark'),
           }, '飞书'),
+          h('button', {
+            key: 'api', type: 'button', className: 'aw-tab',
+            'data-on': tab === 'api' ? '1' : '0',
+            'aria-current': tab === 'api' ? 'page' : undefined,
+            onClick: () => setTab('api'),
+          }, 'API 配置')),
 
         // 内容区包一层：接受跳转链接的焦点，并承载统一的内边距与过渡。
         h('main', {
